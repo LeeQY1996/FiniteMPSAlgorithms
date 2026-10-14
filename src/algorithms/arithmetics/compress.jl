@@ -7,19 +7,75 @@
 # ALS compression cache: maximize |⟨out|inp⟩|; reuses OverlapCache
 const CompressCache = OverlapCache
 
+# ---------- zip-fused sweep kernels (pre-fused partial site tensors) ----------
+#
+# Each site fuses the overlap contraction `(cL · ket)` (right mirror: `(ket · cR)`) **once**
+# into a fused tensor; the same fused tensor is then used twice — the local ALS target (one
+# binary contraction with the opposite overlap environment) and the next overlap
+# environment (one binary contraction with the conj of the updated bra). This halves the
+# per-site contraction work of the sweeps (the general template contracts the ket tensor
+# into the environments twice), the zip mechanism of the ALS sweeps in
+# InfiniteMPSAlgorithms.
+
+function _fuse_left(c::OverlapCache, s::Integer)
+	if c.ket[s] isa MPOTensor
+		return @tensor K[b, o, m, i] := c.cstorage[s][b, kL] * c.ket[s][kL, o, m, i]
+	end
+	return @tensor K[b, p, km] := c.cstorage[s][b, kL] * c.ket[s][kL, p, km]
+end
+function _fuse_right(c::OverlapCache, s::Integer)
+	if c.ket[s] isa MPOTensor
+		return @tensor S[kL, o, bR, i] := c.cstorage[s+1][bR, kR] * c.ket[s][kL, o, kR, i]
+	end
+	return @tensor S[kL, p, bR] := c.cstorage[s+1][bR, kR] * c.ket[s][kL, p, kR]
+end
+
+function _map_fused(K::AbstractArray{T,3}, c::OverlapCache, s::Integer) where {T}
+	return @tensor t[b, p, bR] := K[b, p, km] * c.cstorage[s+1][bR, km]
+end
+function _map_fused(K::AbstractArray{T,4}, c::OverlapCache, s::Integer) where {T}
+	return @tensor t[b, o, bR, i] := K[b, o, m, i] * c.cstorage[s+1][bR, m]
+end
+function _map_fusedR(S::AbstractArray{T,3}, c::OverlapCache, s::Integer) where {T}
+	return @tensor t[bL, p, bR] := c.cstorage[s][bL, kL] * S[kL, p, bR]
+end
+function _map_fusedR(S::AbstractArray{T,4}, c::OverlapCache, s::Integer) where {T}
+	return @tensor t[bL, o, bR, i] := c.cstorage[s][bL, kL] * S[kL, o, bR, i]
+end
+
+function _push_left_fused!(c::OverlapCache, K, s::Integer)
+	bra = c.bra[s]
+	if ndims(K) == 3
+		c.cstorage[s+1] = @tensor h[bR, km] := conj(bra[bL, p, bR]) * K[bL, p, km]
+	else
+		c.cstorage[s+1] = @tensor h[bR, m] := conj(bra[bL, o, bR, i]) * K[bL, o, m, i]
+	end
+	return c
+end
+function _push_right_fused!(c::OverlapCache, S, s::Integer)
+	bra = c.bra[s]
+	if ndims(S) == 3
+		c.cstorage[s] = @tensor h[bL, kL] := conj(bra[bL, p, bR]) * S[kL, p, bR]
+	else
+		c.cstorage[s] = @tensor h[bL, kL] := conj(bra[bL, o, bR, i]) * S[kL, o, bR, i]
+	end
+	return c
+end
+
 function leftsweep!(c::OverlapCache, alg::DMRG1)
 	L = length(c.bra)
 	kvals = zeros(Float64, L)
 	for s in 1:L-1
-		t = _reduce_compress_site(c, s)
+		K = _fuse_left(c, s)
+		t = _map_fused(K, c, s)
 		kvals[s] = norm(t)
 		(alg.verbosity > 2) && _logupdate(stdout, "l2r", s, kvals[s])
 		q, r = _gauge_left(t, alg.alg_orth)
 		c.bra[s] = q
 		c.bra[s+1] = _contract_first(c.bra[s+1], r)
-		updateleft!(c, s)
+		_push_left_fused!(c, K, s)
 	end
-	t = _reduce_compress_site(c, L)
+	t = _map_fused(_fuse_left(c, L), c, L)
 	kvals[L] = norm(t)
 	(alg.verbosity > 2) && _logupdate(stdout, "l2r", L, kvals[L])
 	c.bra[L] = t
@@ -31,16 +87,17 @@ function rightsweep!(c::OverlapCache, alg::DMRG1)
 	kvals = zeros(Float64, L)
 	k = 1
 	for s in L:-1:2
-		t = _reduce_compress_site(c, s)
+		S = _fuse_right(c, s)
+		t = _map_fusedR(S, c, s)
 		kvals[k] = norm(t)
 		(alg.verbosity > 2) && _logupdate(stdout, "r2l", s, kvals[k])
 		k += 1
 		l, q = _gauge_right(t, alg.alg_orth)
 		c.bra[s] = q
 		c.bra[s-1] = _contract_last(c.bra[s-1], l)
-		updateright!(c, s)
+		_push_right_fused!(c, S, s)
 	end
-	t = _reduce_compress_site(c, 1)
+	t = _map_fusedR(_fuse_right(c, 1), c, 1)
 	kvals[L] = norm(t)
 	(alg.verbosity > 2) && _logupdate(stdout, "r2l", 1, kvals[L])
 	c.bra[1] = t
@@ -48,13 +105,6 @@ function rightsweep!(c::OverlapCache, alg::DMRG1)
 end
 
 sweep!(c::OverlapCache, alg::DMRG1) = vcat(leftsweep!(c, alg), rightsweep!(c, alg))
-
-function _reduce_compress_site(c::OverlapCache, s::Integer)
-	if c.ket[s] isa MPOTensor
-		return @tensor tmp4[-1, -2, -3, -4] := c.cstorage[s][-1, 1] * c.ket[s][1, -2, 2, -4] * c.cstorage[s+1][-3, 2]
-	end
-	return @tensor tmp[-1, -2, -3] := c.cstorage[s][-1, 1] * c.ket[s][1, -2, 2] * c.cstorage[s+1][-3, 2]
-end
 
 # ---------- initial guess & cache construction ----------
 
@@ -116,15 +166,39 @@ compress(h::MPOHamiltonian, alg::DMRG1) =
 
 # ---------- two-site (DMRG2) sweeps and interface ----------
 
+# the two-site optimal overlap block from the fused left tensor K (= cL · ket[s], the same
+# `_fuse_left` the single-site sweeps use): one contraction with the fused right site
+# (ket[s+1] into the right overlap environment)
+function _map_fused2(K::AbstractArray{T,3}, c::OverlapCache, s::Integer) where {T}
+	return @tensor t[bL, -2, -3, -4] := K[bL, -2, km] * c.ket[s+1][km, -3, kR] *
+									   c.cstorage[s+2][-4, kR]
+end
+function _map_fused2(K::AbstractArray{T,4}, c::OverlapCache, s::Integer) where {T}
+	return @tensor t[b, -2, -3, -4, -5, xR] := K[b, -2, m, -4] * c.ket[s+1][m, -3, kR, -5] *
+											  c.cstorage[s+2][xR, kR]
+end
+
+# the mirror image: the fused right tensor S (= ket[s+1] · cR) and the left site chain
+# (cL · ket[s])
+function _map_fused2R(S::AbstractArray{T,3}, c::OverlapCache, s::Integer) where {T}
+	return @tensor t[-1, -2, -3, -4] := c.cstorage[s][-1, kL] * c.ket[s][kL, -2, km] *
+									   S[km, -3, -4]
+end
+function _map_fused2R(S::AbstractArray{T,4}, c::OverlapCache, s::Integer) where {T}
+	return @tensor t[b, -2, -3, -4, -5, xR] := c.cstorage[s][b, kL] * c.ket[s][kL, -2, m, -4] *
+											  S[m, -3, xR, -5]
+end
+
 function leftsweep!(c::OverlapCache, alg::DMRG2)
 	L = length(c.bra)
 	kvals = zeros(Float64, L)
 	for s in 1:L-1
-		t2 = _reduce_two_site(c, s)
+		K = _fuse_left(c, s)
+		t2 = _map_fused2(K, c, s)
 		kvals[s] = norm(t2)
 		(alg.verbosity > 2) && _logupdate(stdout, "l2r", s, kvals[s])
 		_als2_update!(c.bra, s, t2, alg; move_right=true)
-		updateleft!(c, s)
+		_push_left_fused!(c, K, s)
 	end
 	kvals[L] = kvals[L-1]
 	return kvals
@@ -135,12 +209,13 @@ function rightsweep!(c::OverlapCache, alg::DMRG2)
 	kvals = zeros(Float64, L)
 	k = 1
 	for s in L:-1:2
-		t2 = _reduce_two_site(c, s - 1)
+		S = _fuse_right(c, s)
+		t2 = _map_fused2R(S, c, s - 1)
 		kvals[k] = norm(t2)
 		(alg.verbosity > 2) && _logupdate(stdout, "r2l", s - 1, kvals[k])
 		k += 1
 		_als2_update!(c.bra, s - 1, t2, alg; move_right=false)
-		updateright!(c, s)
+		_push_right_fused!(c, S, s)
 	end
 	kvals[L] = kvals[L-1]
 	return kvals

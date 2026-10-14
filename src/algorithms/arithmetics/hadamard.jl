@@ -92,11 +92,6 @@ struct HadamardCache{A, B, O, T}
 	hstorage::Vector{Array{T,3}}
 end
 
-_env_updateleft!(m::HadamardCache, s) =
-	(m.hstorage[s+1] = _updateleft(m.hstorage[s], m.bra[s], m.ketx[s], m.kety[s]); m)
-_env_updateright!(m::HadamardCache, s) =
-	(m.hstorage[s] = _updateright(m.hstorage[s+1], m.bra[s], m.ketx[s], m.kety[s]); m)
-
 function _init_hstorage_right!(m::HadamardCache)
 	L = length(m.bra)
 	T = scalartype(m.bra)
@@ -108,26 +103,93 @@ function _init_hstorage_right!(m::HadamardCache)
 	return m
 end
 
+# ---------- zip-fused sweep kernels (pre-fused partial site tensors) ----------
+#
+# Each site fuses the four-chain pointwise-product contraction `(hL · ψA · ψB)` (right
+# mirror: `(hR · ψA · ψB)`) **once** into a fused tensor; the same fused tensor is then
+# used twice — the local ALS target (one binary contraction with the opposite environment)
+# and the next environment (one binary contraction with the conj of the updated bra). This
+# halves the per-site contraction work of the sweeps (the general template contracts the
+# `(ψA, ψB)` pair twice). The physical index is shared elementwise between ψA and ψB —
+# broadcast, NOT contracted — so the fusions are batched over it explicitly (a `@tensor`
+# would sum over a shared index instead of broadcasting).
+
+function _fuse_left(m::HadamardCache, s::Integer)
+	hL, A, B = m.hstorage[s], m.ketx[s], m.kety[s]
+	T = promote_type(eltype(hL), eltype(A))
+	dOL, dAL, dbL = size(hL)
+	dp, dR, dbR = size(A, 2), size(A, 3), size(B, 3)
+	K = zeros(T, dOL, dR, dbR, dp)
+	Lm = reshape(permutedims(hL, (2, 3, 1)), dAL, dbL * dOL)      # (aL, bL oL)
+	for p in 1:dp
+		# contract aL: (aR, bL, oL)
+		M = reshape(transpose(@view(A[:, p, :])) * Lm, dR, dbL, dOL)
+		# contract bL: (bR, aR, oL) → store as (oL, aR, bR)
+		Y = reshape(transpose(@view(B[:, p, :])) *
+					reshape(permutedims(M, (2, 1, 3)), dbL, dOL * dR), dbR, dR, dOL)
+		K[:, :, :, p] .= permutedims(Y, (3, 2, 1))
+	end
+	return K
+end
+
+function _fuse_right(m::HadamardCache, s::Integer)
+	hR, A, B = m.hstorage[s+1], m.ketx[s], m.kety[s]
+	T = promote_type(eltype(hR), eltype(A))
+	dAL, dp, dAR = size(A)
+	dbL, dbR = size(B, 1), size(B, 3)
+	dOR = size(hR, 1)
+	S = zeros(T, dAL, dbL, dOR, dp)
+	Rm = reshape(permutedims(hR, (2, 3, 1)), dAR, dbR * dOR)      # (aR, bR oR)
+	for p in 1:dp
+		# contract aR: (aL, bR, oR)
+		M = reshape(@view(A[:, p, :]) * Rm, dAL, dbR, dOR)
+		# contract bR: (bL, aL, oR) → store as (aL, bL, oR)
+		Y = reshape(@view(B[:, p, :]) *
+					reshape(permutedims(M, (2, 1, 3)), dbR, dAL * dOR), dbL, dAL, dOR)
+		S[:, :, :, p] .= permutedims(Y, (2, 1, 3))
+	end
+	return S
+end
+
+function _map_fused(K, m::HadamardCache, s::Integer)
+	return @tensor t[oL, p, oR] := K[oL, aR, bR, p] * m.hstorage[s+1][oR, aR, bR]
+end
+function _map_fusedR(S, m::HadamardCache, s::Integer)
+	return @tensor t[oL, p, oR] := m.hstorage[s][oL, aL, bL] * S[aL, bL, oR, p]
+end
+
+function _push_left_fused!(m::HadamardCache, K, s::Integer)
+	m.hstorage[s+1] = @tensor h[oR, aR, bR] := conj(m.bra[s][oL, p, oR]) * K[oL, aR, bR, p]
+	return m
+end
+function _push_right_fused!(m::HadamardCache, S, s::Integer)
+	m.hstorage[s] = @tensor h[oL, aL, bL] := conj(m.bra[s][oL, p, oR]) * S[aL, bL, oR, p]
+	return m
+end
+
 """
 	leftsweep!(m::HadamardCache, alg::DMRG1) -> kvals
 
 ALS left sweep of the hadamard problem: at each site the local target is the environment
 contraction `Cleft · ψA · ψB · Cright`; the chain is moved by QR and the loss
-`norm(target)` is recorded per site. The losses are non-decreasing across the sweep.
+`norm(target)` is recorded per site. The losses are non-decreasing across the sweep. Each
+site fuses `(Cleft · ψA · ψB)` once and uses the fused tensor both for the target and
+(with the updated bra) for the next environment.
 """
 function leftsweep!(m::HadamardCache, alg::DMRG1)
 	L = length(m.bra)
 	kvals = zeros(Float64, L)
 	for s in 1:L-1
-		mpsj = _reduce_hadamard_site(m.ketx[s], m.kety[s], m.hstorage[s], m.hstorage[s+1])
+		K = _fuse_left(m, s)
+		mpsj = _map_fused(K, m, s)
 		kvals[s] = norm(mpsj)
 		(alg.verbosity > 2) && _logupdate(stdout, "l2r", s, kvals[s])
 		q, r = _gauge_left(mpsj, alg.alg_orth)
 		m.bra[s] = q
 		m.bra[s+1] = _contract_first(m.bra[s+1], r)
-		_env_updateleft!(m, s)
+		_push_left_fused!(m, K, s)
 	end
-	mpsj = _reduce_hadamard_site(m.ketx[L], m.kety[L], m.hstorage[L], m.hstorage[L+1])
+	mpsj = _map_fused(_fuse_left(m, L), m, L)
 	kvals[L] = norm(mpsj)
 	(alg.verbosity > 2) && _logupdate(stdout, "l2r", L, kvals[L])
 	m.bra[L] = mpsj
@@ -145,16 +207,17 @@ function rightsweep!(m::HadamardCache, alg::DMRG1)
 	kvals = zeros(Float64, L)
 	k = 1
 	for s in L:-1:2
-		mpsj = _reduce_hadamard_site(m.ketx[s], m.kety[s], m.hstorage[s], m.hstorage[s+1])
+		S = _fuse_right(m, s)
+		mpsj = _map_fusedR(S, m, s)
 		kvals[k] = norm(mpsj)
 		(alg.verbosity > 2) && _logupdate(stdout, "r2l", s, kvals[k])
 		k += 1
 		l, q = _gauge_right(mpsj, alg.alg_orth)
 		m.bra[s] = q
 		m.bra[s-1] = _contract_last(m.bra[s-1], l)
-		_env_updateright!(m, s)
+		_push_right_fused!(m, S, s)
 	end
-	mpsj = _reduce_hadamard_site(m.ketx[1], m.kety[1], m.hstorage[1], m.hstorage[2])
+	mpsj = _map_fusedR(_fuse_right(m, 1), m, 1)
 	kvals[L] = norm(mpsj)
 	(alg.verbosity > 2) && _logupdate(stdout, "r2l", 1, kvals[L])
 	m.bra[1] = mpsj
@@ -287,30 +350,55 @@ end
 
 # ---------- two-site (DMRG2) sweeps and interface ----------
 
-# the two-site optimal pointwise-product block, batched over the pair of shared physical
-# indices: the fused pair of BOTH sites is never materialized (KB2 would hold D^4*d^2
-# elements, e.g. 1.07 GiB at D=64, and the n-ary contraction around it produced the same
-# order of intermediates); every intermediate below stays at O(D^3)
-function _reduce_hadamard_site2(m::HadamardCache, s::Integer)
-	A1, A2 = m.ketx[s], m.ketx[s+1]
-	B1, B2 = m.kety[s], m.kety[s+1]
-	hL = m.hstorage[s]        # (oL, aL, bL)
-	hR = m.hstorage[s + 2]    # (oR, aR, bR)
-	T = promote_type(eltype(hL), eltype(A1))
-	dOL, dAL = size(hL, 1), size(A1, 1)
-	dp1, dp2 = size(A1, 2), size(A2, 2)
-	dAR, dOR = size(A2, 3), size(hR, 1)
-	dbL, dbR = size(B1, 1), size(B2, 3)
+# the two-site optimal pointwise-product block from the fused left tensor K
+# (= Cleft · ψA[s] · ψB[s], the same `_fuse_left` the single-site sweeps use): one
+# contraction with the fused right site (ψA[s+1], ψB[s+1] and the right environment) —
+# the pair tensors of both sites are never formed, and every intermediate stays at
+# O(D^3) per physical pair (the physical pair is shared elementwise between ψA[s+1] and
+# ψB[s+1] — broadcast, NOT contracted — hence the explicit (p1, p2) batching)
+function _map_fused2(K, m::HadamardCache, s::Integer)
+	A2, B2, hR = m.ketx[s+1], m.kety[s+1], m.hstorage[s+2]
+	T = promote_type(eltype(K), eltype(A2))
+	dOL, dA1R, dB1R, dp1 = size(K)
+	dp2, dAR, dbR, dOR = size(A2, 2), size(A2, 3), size(B2, 3), size(hR, 1)
 	t2 = zeros(T, dOL, dp1, dp2, dOR)
-	# the physical pair is shared elementwise between the two kets: broadcast, not contract
-	HRm = reshape(permutedims(hR, (3, 2, 1)), dbR, dAR * dOR)   # (bR, aR oR)
-	Lm = reshape(hL, dOL, dAL * dbL)                           # (oL, aL bL)
-	for p1 in 1:dp1, p2 in 1:dp2
-		a2 = @view(A1[:, p1, :]) * @view(A2[:, p2, :])   # (aL, aR)
-		b2 = @view(B1[:, p1, :]) * @view(B2[:, p2, :])   # (bL, bR)
-		Y = reshape(b2 * HRm, dbL, dAR, dOR)             # (bL, aR, oR)
-		Y2 = reshape(permutedims(Y, (2, 1, 3)), dAR, dbL * dOR)   # (aR, bL oR)
-		t2[:, p1, p2, :] .= reshape(Lm * reshape(a2 * Y2, dAL * dbL, dOR), dOL, dOR)
+	HRm = reshape(permutedims(hR, (2, 3, 1)), dAR * dbR, dOR)     # (aR bR, oR)
+	# K folded to (b1R, a1R, oL·p1): the b1R leg contracts B2 once for all p1/p2
+	Kp = reshape(permutedims(K, (3, 2, 1, 4)), dB1R, dA1R * dOL * dp1)
+	for p2 in 1:dp2
+		# contract b1R: (bR, a1R, oL, p1)
+		Y = reshape(transpose(@view(B2[:, p2, :])) * Kp, dbR, dA1R, dOL, dp1)
+		# contract a1R: (aR, bR, p1, oL)
+		Z = reshape(transpose(@view(A2[:, p2, :])) *
+					reshape(permutedims(Y, (2, 1, 4, 3)), dA1R, dbR * dp1 * dOL),
+					dAR, dbR, dp1, dOL)
+		# contract (aR, bR) against the right environment
+		Zp = reshape(permutedims(Z, (4, 3, 1, 2)), dOL * dp1, dAR * dbR)
+		t2[:, :, p2, :] .= reshape(Zp * HRm, dOL, dp1, dOR)
+	end
+	return t2
+end
+
+# the mirror image: the fused right tensor S (= Cright · ψA[s+1] · ψB[s+1]) and the left
+# site chain (Cleft · ψA[s] · ψB[s]), batched over the shared physical pair
+function _map_fused2R(S, m::HadamardCache, s::Integer)
+	A1, B1, hL = m.ketx[s], m.kety[s], m.hstorage[s]
+	T = promote_type(eltype(S), eltype(A1))
+	dOL, dAL, dbL = size(hL)
+	dp1, dp2, dOR = size(A1, 2), size(S, 4), size(S, 3)
+	t2 = zeros(T, dOL, dp1, dp2, dOR)
+	HLm = reshape(hL, dOL, dAL * dbL)                            # (oL, aL bL)
+	Sp = reshape(S, size(S, 1), size(S, 2) * size(S, 3) * size(S, 4))  # (aR, bR oR p2)
+	for p1 in 1:dp1
+		a1, b1 = @view(A1[:, p1, :]), @view(B1[:, p1, :])        # (aL, aR), (bL, bR)
+		# contract aR (= S's first leg): (aL, bR, oR, p2)
+		U = reshape(a1 * Sp, dAL, size(S, 2), dOR, dp2)
+		# contract bR (= S's second leg): (bL, aL, oR, p2)
+		V = reshape(b1 * reshape(permutedims(U, (2, 1, 3, 4)), size(S, 2), dAL * dOR * dp2),
+					dbL, dAL, dOR, dp2)
+		# contract (aL, bL) against the left environment
+		Vm = reshape(permutedims(V, (2, 1, 3, 4)), dAL * dbL, dOR * dp2)
+		t2[:, p1, :, :] .= permutedims(reshape(HLm * Vm, dOL, dOR, dp2), (1, 3, 2))
 	end
 	return t2
 end
@@ -319,11 +407,12 @@ function leftsweep!(m::HadamardCache, alg::DMRG2)
 	L = length(m.bra)
 	kvals = zeros(Float64, L)
 	for s in 1:L-1
-		t2 = _reduce_hadamard_site2(m, s)
+		K = _fuse_left(m, s)
+		t2 = _map_fused2(K, m, s)
 		kvals[s] = norm(t2)
 		(alg.verbosity > 2) && _logupdate(stdout, "l2r", s, kvals[s])
 		_als2_update!(m.bra, s, t2, alg; move_right=true)
-		_env_updateleft!(m, s)
+		_push_left_fused!(m, K, s)
 	end
 	kvals[L] = kvals[L-1]
 	return kvals
@@ -334,12 +423,13 @@ function rightsweep!(m::HadamardCache, alg::DMRG2)
 	kvals = zeros(Float64, L)
 	k = 1
 	for s in L:-1:2
-		t2 = _reduce_hadamard_site2(m, s - 1)
+		S = _fuse_right(m, s)
+		t2 = _map_fused2R(S, m, s - 1)
 		kvals[k] = norm(t2)
 		(alg.verbosity > 2) && _logupdate(stdout, "r2l", s - 1, kvals[k])
 		k += 1
 		_als2_update!(m.bra, s - 1, t2, alg; move_right=false)
-		_env_updateright!(m, s)
+		_push_right_fused!(m, S, s)
 	end
 	kvals[L] = kvals[L-1]
 	return kvals

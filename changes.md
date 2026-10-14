@@ -1,5 +1,32 @@
 # Interface changes
 
+## Performance: zip-fused ALS sweeps for `mult` / `compress` / `hadamard` (DMRG1 & DMRG2)
+
+The ALS sweeps of the three iterative arithmetics (`mult`, `compress`, `hadamard`, both
+the `DMRG1` and `DMRG2` engines) adopt the pre-fused partial-tensor mechanism of
+InfiniteMPSAlgorithms (`zip_sweeps!`): each site fuses the repeated `(environment ·
+ket · operator)` contraction (pointwise-product pair for `hadamard`; `(cL · ket)` for
+`compress`) **once** into a fused tensor and uses it twice —
+
+- *map*: one binary contraction with the opposite environment gives the local ALS
+  target (`_map_fused` / `_map_fusedR`, plus the two-site `_map_fused2` / `_map_fused2R`
+  that contract only the opposite sandwich);
+- *push*: one binary contraction with `conj(updated bra)` gives the next environment
+  (`_push_left_fused!` / `_push_right_fused!`).
+
+The general template contracted the same `(ket, operator)` pair twice per site (local
+target + environment push); the fused sweeps contract it once, roughly halving the
+per-site sweep contraction work. The `hadamard` fusions are batched explicitly over the
+shared physical index (it is elementwise between the two kets — broadcast, not a
+contraction, so `@tensor` cannot express it). The sweep interfaces, loss histories and
+results are unchanged: the fused sweeps realize the same variational iteration up to
+floating-point re-association (verified sweep-by-sweep against the previous
+implementation — per-sweep losses and optimized chains agree to ~1e-15 relative, see
+`debug/zip_fuse_compare.jl`; the general kernels they replace — `_reduce_site`,
+`_reduce_site2`, `_reduce_hadamard_site2`, `_reduce_compress_site` and the OverlapCache
+`_reduce_two_site` — are gone, while `_reduce_hadamard_site` stays for the HadamardTDVP
+site maps). Full suite: 1023/1023.
+
 ## New: `dot` / `distance` / `fidelity` for `CanonicalMPO` pairs
 
 `CanonicalMPO` gains the same linear-algebra interface as `CanonicalMPS`:

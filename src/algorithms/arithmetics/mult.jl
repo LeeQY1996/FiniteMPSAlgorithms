@@ -69,19 +69,6 @@ _env_updateleft(h, O, M, B::MPOTensor) = _updateleft3(h, O, M, B)
 _env_updateright(h, O, M, B::MPSTensor) = _updateright(h, O, M, B)
 _env_updateright(h, O, M, B::MPOTensor) = _updateright3(h, O, M, B)
 
-# local ALS targets
-function _reduce_site(A::MPSTensor, X::MPOTensor, cleft, cright)
-	@tensor tmp[-1, -2, -3] := cleft[-1, 1, 2] * A[2, 3, 4] * X[1, -2, 5, 3] * cright[-3, 5, 4]
-	return tmp
-end
-# block-sparse MPO site tensors: densify (a wrapper copy) and take the dense path
-_reduce_site(A::MPSTensor, X::SchurMPOTensor, cleft, cright) =
-	_reduce_site(A, tompotensor(X), cleft, cright)
-function _reduce_site(A::MPOTensor, X::MPOTensor, cleft, cright)
-	@tensor tmp[-1, -2, -3, -4] := cleft[-1, 1, 2] * A[2, 3, 4, -4] * X[1, -2, 5, 3] * cright[-3, 5, 4]
-	return tmp
-end
-
 # ---------- ALS cache ----------
 
 """
@@ -109,29 +96,97 @@ function _init_hstorage_right!(m::MultCache)
 	return m
 end
 
-_env_updateleft!(m::MultCache, s) = (m.hstorage[s+1] = _env_updateleft(m.hstorage[s], m.bra[s], m.H[s], m.ket[s]); m)
-_env_updateright!(m::MultCache, s) = (m.hstorage[s] = _env_updateright(m.hstorage[s+1], m.bra[s], m.H[s], m.ket[s]); m)
+# ---------- zip-fused sweep kernels (pre-fused partial site tensors) ----------
+#
+# Each site fuses the three-chain contraction `(hL · ket · H)` (right mirror:
+# `(hR · ket · H)`) **once** into a fused tensor with the MPO's physical-out leg and the
+# open right bonds — the same fused tensor is then used twice:
+#
+# - *map*: one binary contraction with the right (left) environment gives the local ALS
+#   target (`_map_fused` / `_map_fusedR`, and their two-site variants `_map_fused2` /
+#   `_map_fused2R` contracting the opposite sandwich);
+# - *push*: one binary contraction with `conj(updated bra)` gives the next environment
+#   (`_push_left_fused!` / `_push_right_fused!`).
+#
+# This halves the per-site contraction work of the sweeps: the general template contracts
+# the `(ket, H)` pair twice (local target + environment push), the fused sweeps contract
+# it once (the zip mechanism of the ALS sweeps in InfiniteMPSAlgorithms).
+
+function _fuse_left(m::MultCache, s::Integer)
+	hL = m.hstorage[s]
+	# block-sparse MPO site tensors: densify (a wrapper copy) and take the dense path
+	Hs = m.H[s] isa MPOTensor ? m.H[s] : tompotensor(m.H[s])
+	if m.ket[s] isa MPSTensor
+		return @tensor K[b, p, wR, kR] := hL[b, wL, kL] * m.ket[s][kL, i, kR] * Hs[wL, p, wR, i]
+	end
+	return @tensor K[b, p, wR, kR, j] := hL[b, wL, kL] * m.ket[s][kL, i, kR, j] * Hs[wL, p, wR, i]
+end
+
+function _fuse_right(m::MultCache, s::Integer)
+	hR = m.hstorage[s+1]
+	# block-sparse MPO site tensors: densify (a wrapper copy) and take the dense path
+	Hs = m.H[s] isa MPOTensor ? m.H[s] : tompotensor(m.H[s])
+	if m.ket[s] isa MPSTensor
+		return @tensor S[kL, wL, p, bR] := hR[bR, wR, kR] * m.ket[s][kL, i, kR] * Hs[wL, p, wR, i]
+	end
+	return @tensor S[kL, wL, p, bR, j] := hR[bR, wR, kR] * m.ket[s][kL, i, kR, j] * Hs[wL, p, wR, i]
+end
+
+function _map_fused(K::AbstractArray{T,4}, m::MultCache, s::Integer) where {T}
+	return @tensor t[b, p, bR] := K[b, p, wR, kR] * m.hstorage[s+1][bR, wR, kR]
+end
+function _map_fused(K::AbstractArray{T,5}, m::MultCache, s::Integer) where {T}
+	return @tensor t[b, p, bR, j] := K[b, p, wR, kR, j] * m.hstorage[s+1][bR, wR, kR]
+end
+function _map_fusedR(S::AbstractArray{T,4}, m::MultCache, s::Integer) where {T}
+	return @tensor t[bL, p, bR] := m.hstorage[s][bL, wL, kL] * S[kL, wL, p, bR]
+end
+function _map_fusedR(S::AbstractArray{T,5}, m::MultCache, s::Integer) where {T}
+	return @tensor t[bL, p, bR, j] := m.hstorage[s][bL, wL, kL] * S[kL, wL, p, bR, j]
+end
+
+function _push_left_fused!(m::MultCache, K, s::Integer)
+	bra = m.bra[s]
+	if ndims(K) == 4
+		m.hstorage[s+1] = @tensor h[bR, wR, kR] := conj(bra[bL, p, bR]) * K[bL, p, wR, kR]
+	else
+		m.hstorage[s+1] = @tensor h[bR, wR, kR] := conj(bra[bL, p, bR, j]) * K[bL, p, wR, kR, j]
+	end
+	return m
+end
+
+function _push_right_fused!(m::MultCache, S, s::Integer)
+	bra = m.bra[s]
+	if ndims(S) == 4
+		m.hstorage[s] = @tensor h[bL, wL, kL] := conj(bra[bL, p, bR]) * S[kL, wL, p, bR]
+	else
+		m.hstorage[s] = @tensor h[bL, wL, kL] := conj(bra[bL, p, bR, j]) * S[kL, wL, p, bR, j]
+	end
+	return m
+end
 
 """
 	leftsweep!(m::MultCache, alg::DMRG1) -> kvals
 
 ALS left sweep for the `mult` problem: the local target at each site is the environment
 contraction `Cleft · imps · mpo · Cright`; the bra is moved by QR and the loss
-`norm(target)` is recorded per site.
+`norm(target)` is recorded per site. Each site fuses `(Cleft · imps · mpo)` once and uses
+the fused tensor both for the target and (with the updated bra) for the next environment.
 """
 function leftsweep!(m::MultCache, alg::DMRG1)
 	L = length(m.bra)
 	kvals = zeros(Float64, L)
 	for s in 1:L-1
-		mpsj = _reduce_site(m.ket[s], m.H[s], m.hstorage[s], m.hstorage[s+1])
+		K = _fuse_left(m, s)
+		mpsj = _map_fused(K, m, s)
 		kvals[s] = norm(mpsj)
 		(alg.verbosity > 2) && _logupdate(stdout, "l2r", s, kvals[s])
 		q, r = _gauge_left(mpsj, alg.alg_orth)
 		m.bra[s] = q
 		m.bra[s+1] = _contract_first(m.bra[s+1], r)
-		_env_updateleft!(m, s)
+		_push_left_fused!(m, K, s)
 	end
-	mpsj = _reduce_site(m.ket[L], m.H[L], m.hstorage[L], m.hstorage[L+1])
+	mpsj = _map_fused(_fuse_left(m, L), m, L)
 	kvals[L] = norm(mpsj)
 	(alg.verbosity > 2) && _logupdate(stdout, "l2r", L, kvals[L])
 	m.bra[L] = mpsj
@@ -142,23 +197,25 @@ end
 	rightsweep!(m::MultCache, alg::DMRG1) -> kvals
 
 ALS right sweep for the `mult` problem (symmetric to `leftsweep!`, LQ gauge moves).
-`kvals` is ordered by processing time — sites `L, L-1, …, 1`.
+`kvals` is ordered by processing time — sites `L, L-1, …, 1`. The fused right tensors
+`(Cright · imps · mpo)` serve the target and the next environment alike.
 """
 function rightsweep!(m::MultCache, alg::DMRG1)
 	L = length(m.bra)
 	kvals = zeros(Float64, L)
 	k = 1
 	for s in L:-1:2
-		mpsj = _reduce_site(m.ket[s], m.H[s], m.hstorage[s], m.hstorage[s+1])
+		S = _fuse_right(m, s)
+		mpsj = _map_fusedR(S, m, s)
 		kvals[k] = norm(mpsj)
 		(alg.verbosity > 2) && _logupdate(stdout, "r2l", s, kvals[k])
 		k += 1
 		l, q = _gauge_right(mpsj, alg.alg_orth)
 		m.bra[s] = q
 		m.bra[s-1] = _contract_last(m.bra[s-1], l)
-		_env_updateright!(m, s)
+		_push_right_fused!(m, S, s)
 	end
-	mpsj = _reduce_site(m.ket[1], m.H[1], m.hstorage[1], m.hstorage[2])
+	mpsj = _map_fusedR(_fuse_right(m, 1), m, 1)
 	kvals[L] = norm(mpsj)
 	(alg.verbosity > 2) && _logupdate(stdout, "r2l", 1, kvals[L])
 	m.bra[1] = mpsj
@@ -376,42 +433,54 @@ _wrap_canonicalmpo(out::AbstractMPO) = CanonicalMPO(out.data)
 
 # ---------- two-site (DMRG2) sweeps and interface ----------
 
-# the two-site optimal block: left environment · ket pair · MPO pair · right environment.
-# Each ket tensor is sandwiched between its MPO site and its environment (left: cL·H1·ket,
-# right: H2·ket·cR), so the ket pair tensor is never formed and every intermediate keeps
-# at most one MPO bond and one ket bond open — O(bra·chi·d^2·D) at most
-function _reduce_site2(m::MultCache, s::Integer)
-	H1, H2 = m.H[s], m.H[s+1]
-	cL, cR = m.hstorage[s], m.hstorage[s+2]
-	# left sandwich: fold the left environment into the first MPO site, then the ket
+# the two-site optimal block from the fused left tensor K (= Cleft · ket[s] · H[s], the
+# same `_fuse_left` the single-site sweeps use): the right sandwich (ket[s+1] into the
+# right environment, then the MPO site) as in the general template, then one binary
+# contraction with K — the ket pair tensor is never formed and every intermediate keeps
+# at most one MPO bond and one ket bond open
+function _map_fused2(K::AbstractArray{T,4}, m::MultCache, s::Integer) where {T}
+	H2, cR = m.H[s+1], m.hstorage[s+2]
+	hr = @tensor h[bR, w2, kR, q2] := cR[bR, w2, kb] * m.ket[s+1][kR, q2, kb]
+	hh = @tensor w[m, p2, bR, kR] := H2[m, p2, w2, q2] * h[bR, w2, kR, q2]
+	return @tensor t[-1, -2, -3, -4] := K[-1, -2, m, kR] * hh[m, -3, -4, kR]
+end
+function _map_fused2(K::AbstractArray{T,5}, m::MultCache, s::Integer) where {T}
+	# MPO-shaped ket (density matrices): the ket's OUT physicals contract the MPO's IN
+	# physicals (the H·ket matrix product, matching `_updateleft3`)
+	H2, cR = m.H[s+1], m.hstorage[s+2]
+	hr = @tensor h[bR, w2, kR, o2, j2] := cR[bR, w2, kb] * m.ket[s+1][kR, o2, kb, j2]
+	hh = @tensor w[m, p2, bR, kR, j2] := H2[m, p2, w2, o2] * h[bR, w2, kR, o2, j2]
+	return @tensor t[-1, -2, -3, -4, -5, -6] := K[-1, -2, m, kR, -4] * hh[m, -3, -6, kR, -5]
+end
+
+# the mirror image: the fused right tensor S (= Cright · ket[s+1] · H[s+1] of the window
+# (s, s+1)) and the left sandwich (Cleft into the first MPO site, then the ket) as in the
+# general template
+function _map_fused2R(S::AbstractArray{T,4}, m::MultCache, s::Integer) where {T}
+	H1, cL = m.H[s], m.hstorage[s]
 	clh = @tensor u[b, p1, m, i1, kL] := cL[b, w1, kL] * H1[w1, p1, m, i1]
-	if m.ket[s] isa MPSTensor
-		v = @tensor v[b, p1, m, km] := clh[b, p1, m, i1, kL] * m.ket[s][kL, i1, km]
-		# right sandwich: the second ket into the right environment, then the MPO site
-		hr = @tensor h[br, w2, km, q2] := cR[br, w2, kb] * m.ket[s+1][km, q2, kb]
-		hh = @tensor w[m, p2, br, km] := H2[m, p2, w2, q2] * hr[br, w2, km, q2]
-		return @tensor t[-1, -2, -3, -4] := v[-1, -2, m, km] * hh[m, -3, -4, km]
-	end
-	# MPO-shaped ket (density matrices): same sandwiches; the ket's OUT physicals
-	# contract the MPO's IN physicals (the H·ket matrix product, matching `_updateleft3`)
+	v = @tensor v[b, p1, m, km] := clh[b, p1, m, i1, kL] * m.ket[s][kL, i1, km]
+	return @tensor t[-1, -2, -3, -4] := v[-1, -2, m, km] * S[km, m, -3, -4]
+end
+function _map_fused2R(S::AbstractArray{T,5}, m::MultCache, s::Integer) where {T}
+	H1, cL = m.H[s], m.hstorage[s]
+	clh = @tensor u[b, p1, m, i1, kL] := cL[b, w1, kL] * H1[w1, p1, m, i1]
 	v = @tensor v[b, p1, m, km, j1] := clh[b, p1, m, i1, kL] * m.ket[s][kL, i1, km, j1]
-	hr = @tensor h[br, w2, km, o2, j2] := cR[br, w2, kb] * m.ket[s+1][km, o2, kb, j2]
-	hh = @tensor w[m, p2, br, km, j2] := H2[m, p2, w2, o2] * hr[br, w2, km, o2, j2]
-	return @tensor t[-1, -2, -3, -4, -5, -6] := v[-1, -2, m, km, -4] *
-											   hh[m, -3, -6, km, -5]
+	return @tensor t[-1, -2, -3, -4, -5, -6] := v[-1, -2, m, km, -4] * S[km, m, -3, -6, -5]
 end
 
 function leftsweep!(m::MultCache, alg::DMRG2)
 	L = length(m.bra)
 	kvals = zeros(Float64, L)
 	for s in 1:L-1
-		t2 = _reduce_site2(m, s)
+		K = _fuse_left(m, s)
+		t2 = _map_fused2(K, m, s)
 		kvals[s] = norm(t2)
 		(alg.verbosity > 2) && _logupdate(stdout, "l2r", s, kvals[s])
 		_als2_update!(m.bra, s, t2, alg; move_right=true)
 		# hstorage[s+1] = left env over sites 1..s — exactly the next pair's left env;
 		# the right envs hstorage[s+2..] must stay untouched
-		_env_updateleft!(m, s)
+		_push_left_fused!(m, K, s)
 	end
 	kvals[L] = kvals[L-1]
 	return kvals
@@ -422,12 +491,13 @@ function rightsweep!(m::MultCache, alg::DMRG2)
 	kvals = zeros(Float64, L)
 	k = 1
 	for s in L:-1:2
-		t2 = _reduce_site2(m, s - 1)
+		S = _fuse_right(m, s)
+		t2 = _map_fused2R(S, m, s - 1)
 		kvals[k] = norm(t2)
 		(alg.verbosity > 2) && _logupdate(stdout, "r2l", s - 1, kvals[k])
 		k += 1
 		_als2_update!(m.bra, s - 1, t2, alg; move_right=false)
-		_env_updateright!(m, s)
+		_push_right_fused!(m, S, s)
 	end
 	kvals[L] = kvals[L-1]
 	return kvals
