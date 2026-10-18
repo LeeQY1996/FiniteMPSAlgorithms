@@ -9,6 +9,8 @@ MPO
 MPOHamiltonian
 OpTerm
 OpSum
+Coeff
+isconstant
 ExpDecayOpTerm
 ExpDecayOpSum
 term
@@ -115,12 +117,14 @@ complex_stepper
 ## Gates (TEBD)
 
 ```@docs
-UnitaryGate
-GeneralGate
+GateOp
+isunitary
 swap!
 positions
 operator
 shift
+fuse_gates
+trotter_propagator
 ```
 
 ## Seq2seq

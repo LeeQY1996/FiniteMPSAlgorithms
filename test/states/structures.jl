@@ -140,6 +140,17 @@ end
     @test t1.coeff == -1.0
     t2 = term(2 => σx)  # default coeff = 1
     @test t2.coeff == 1.0
+    # scalartype promotes the operators with the coefficient type
+    tc = OpTerm(2.0im, 1 => σx)
+    @test scalartype(tc) == ComplexF64
+    @test eltype(tc.operators[1]) == ComplexF64
+    ti3 = OpTerm(3, 1 => σx)
+    @test scalartype(ti3) == Float64
+    @test ti3.coeff == 3
+    tfun = OpTerm(t -> im * exp(-t), 1 => σx)
+    @test scalartype(tfun) == ComplexF64
+    @test eltype(tfun.operators[1]) == ComplexF64
+    @test !isconstant(tfun) && isconstant(ti3)
 
     # isleftcanonical on MPS tensor
     ψ = randommps(Float64, ds; D=4)

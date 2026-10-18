@@ -7,7 +7,7 @@ using TensorOperations
 import TensorOperations: scalartype
 using MatrixAlgebraKit: MatrixAlgebraKit, left_orth!, right_orth!, svd_compact!,
 	QRIteration, DivideAndConquer, SafeDivideAndConquer, TruncatedAlgorithm, trunctol,
-	LeftOrthAlgorithm, RightOrthAlgorithm, diagview, isunitary
+	LeftOrthAlgorithm, RightOrthAlgorithm, diagview
 using KrylovKit: KrylovKit, eigsolve, exponentiate
 
 # verbosity level for iterative MPS algorithms
@@ -26,7 +26,7 @@ export TruncationScheme, NoTruncation, TruncateDim, TruncateRelError, TruncateDi
 export AbstractMPS, AbstractMPO, MPSTensor, MPOTensor, CanonicalMPS, CanonicalMPO,
 	MPO, MPOHamiltonian, Orthogonalize,
 	SchurMPOTensor, SparseMPOHamiltonian,
-	OpTerm, OpSum, term, tompotensor, tompotensors,
+	OpTerm, OpSum, Coeff, isconstant, term, tompotensor, tompotensors,
 	todense, vectorize, devectorize, superoperator,
 	ExpDecayOpTerm, ExpDecayOpSum,
 	isleftcanonical, isrightcanonical, iscanonical, canonicalize!, canonicalize,
@@ -62,7 +62,7 @@ export mult, add, compress, compress!,
         CAMPS, CliffordGate, PauliTerm,
         ALSRecon, ALSRecon2, ALSReconCache, reconstruct, reconstruct!
 # gates
-export AbstractGate, UnitaryGate, GeneralGate, apply!, swap!, positions, shift
+export AbstractGate, GateOp, isunitary, apply!, swap!, positions, shift, fuse_gates, trotter_propagator
 
 include("tensorops/tensorops.jl")
 include("defaults.jl")

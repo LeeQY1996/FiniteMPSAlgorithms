@@ -152,6 +152,8 @@ function _mpohamiltonian_from_terms(ds::AbstractVector{Int}, terms::AbstractVect
 	L = length(ds)
 	isempty(terms) && throw(ArgumentError("no terms given"))
 	for t in terms
+		isconstant(t) || throw(ArgumentError(
+			"time-dependent coefficients are only supported by `trotter_propagator`"))
 		all(1 .<= t.positions .<= L) || throw(ArgumentError("term positions out of range"))
 		for (pos, op) in zip(t.positions, t.operators)
 			(size(op, 1) == ds[pos]) ||
@@ -162,7 +164,7 @@ function _mpohamiltonian_from_terms(ds::AbstractVector{Int}, terms::AbstractVect
 	# a single scalar type across all sites (terms may mix real and complex operators)
 	T = Float64
 	for t in terms
-		T = promote_type(T, typeof(t.coeff))
+		T = promote_type(T, scalartype(t.coeff))
 		for op in t.operators
 			T = promote_type(T, scalartype(op))
 		end
@@ -202,11 +204,11 @@ function _mpohamiltonian_from_terms(ds::AbstractVector{Int}, terms::AbstractVect
 				end
 			elseif nt == 1
 				# on-site term: vacuum -> closing corner
-				Os[1, n] = _add_block(Os[1, n], asM(t.coeff * t.operators[1]))
+				Os[1, n] = _add_block(Os[1, n], asM(t.coeff.f * t.operators[1]))
 			elseif j == 1
 				# string start: vacuum -> interior
 				li = bases[a] - 1
-				Os[1, li+1] = _add_block(Os[1, li+1], asM(t.coeff * t.operators[1]))
+				Os[1, li+1] = _add_block(Os[1, li+1], asM(t.coeff.f * t.operators[1]))
 			elseif j == nt
 				# string end: interior -> closing
 				li = bases[a] + nt - 3

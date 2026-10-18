@@ -2,21 +2,49 @@
 # OpSum: a validated collection of OpTerms on a shared lattice, built by `+`.
 
 """
+	Coeff(x)
+	Coeff(f)
+
+A scalar coefficient of an [`OpTerm`](@ref): a plain number `x`, or a time-dependent
+function `f` mapping a time to a number (a bare function is wrapped as `Coeff(f)`).
+`(c::Coeff)(t)` evaluates the coefficient at time `t` (a constant ignores `t`),
+[`isconstant`](@ref) says whether it is time-independent, and `scalartype(c)` probes
+the produced number type (a function coefficient is probed at `t = 0.0`). Time-dependent
+coefficients are only supported by [`trotter_propagator`](@ref).
+"""
+struct Coeff{F}
+	f::F
+end
+Coeff(x::Number) = Coeff{typeof(x)}(x)
+
+(c::Coeff)(t::Number) = c.f isa Number ? c.f : c.f(t)
+isconstant(c::Coeff) = c.f isa Number
+scalartype(c::Coeff) = c.f isa Number ? typeof(c.f) : typeof(c.f(0.0))
+Base.:(==)(a::Coeff, b::Coeff) = a.f == b.f
+Base.:(==)(a::Coeff, x::Number) = isconstant(a) && a.f == x
+Base.:(==)(x::Number, a::Coeff) = a == x
+Base.conj(c::Coeff) = isconstant(c) ? Coeff(conj(c.f)) : Coeff(t -> conj(c.f(t)))
+# the hermitian conjugate of a coefficient (a time-dependent one is conjugated pointwise)
+_adjoint(c::Coeff) = isconstant(c) ? Coeff(conj(c.f)) : Coeff(t -> conj(c.f(t)))
+
+"""
 	OpTerm(coeff, positions, operators)
 	OpTerm(coeff, i₁ => O₁, i₂ => O₂, ...)
 
 A product operator term `coeff * O₁ ⊗ O₂ ⋯` acting on the site positions `positions`
 (each position at most once; the term is symmetrized in any order, since the operators
-commute on distinct sites). The operators only have to be *square*: the local dimension
+commute on distinct sites). The coefficient may be a number, a time-dependent function
+`t -> x(t)` or a [`Coeff`](@ref) — time-dependent terms are only supported by
+[`trotter_propagator`](@ref). The operators only have to be *square*: the local dimension
 may differ from site to site, and [`OpSum`](@ref) checks every operator against its own
 `ds[pos]`. Terms are combined into sums with `+`
 (`OpTerm + OpTerm -> OpSum`, `OpSum + OpTerm`, `OpTerm + OpSum`, `OpSum + OpSum`).
 """
 struct OpTerm{T<:Number}
-	coeff::T
+	coeff::Coeff
 	positions::Vector{Int}
 	operators::Vector{Matrix{T}}
-	function OpTerm(coeff::Number, positions::AbstractVector{Int},
+	function OpTerm(coeff, positions::AbstractVector{Int},
 					operators::AbstractVector{<:AbstractMatrix})
 		N = length(positions)
 		(N > 0) || throw(ArgumentError("term must act on at least one site"))
@@ -28,26 +56,40 @@ struct OpTerm{T<:Number}
 			(size(op, 1) == size(op, 2)) ||
 				throw(DimensionMismatch("every operator of a term must be a square matrix, got $(size(op))"))
 		end
-		T = promote_type(typeof(coeff), scalartype(operators[1]))
+		coeff isa Coeff || (coeff = Coeff(coeff))
+		# the storage type promotes the operators with the coefficient's scalar type
+		# (a function coefficient is probed at t = 0)
+		T = promote_type(scalartype(coeff), scalartype(operators[1]))
 		for op in operators
 			T = promote_type(T, scalartype(op))
 		end
+		isconstant(coeff) && (coeff = Coeff(convert(T, coeff.f)))
 		perm = sortperm(positions)
-		return new{T}(convert(T, coeff), collect(Int, positions[perm]),
+		return new{T}(coeff, collect(Int, positions[perm]),
 			[convert(Matrix{T}, op) for op in operators[perm]])
 	end
 end
 
 scalartype(::Type{OpTerm{T}}) where {T} = T
+# the dynamically probed scalar type of a term: the operators' type promoted with the
+# coefficient's produced number type (a function coefficient is probed at t = 0)
+scalartype(t::OpTerm) = promote_type(scalartype(t.operators[1]), scalartype(t.coeff))
+
+"time-dependent coefficients are only supported by `trotter_propagator`"
+function _check_constant(t::OpTerm)
+	isconstant(t) || throw(ArgumentError(
+		"time-dependent coefficients are only supported by `trotter_propagator`"))
+	return t
+end
 
 Base.:(==)(a::OpTerm, b::OpTerm) = a.coeff == b.coeff && a.positions == b.positions &&
 	a.operators == b.operators
 
 # the hermitian conjugate: conjugated coefficient, adjointed operators (positions keep
 # their order — each local operator is adjointed in place)
-Base.adjoint(t::OpTerm) = OpTerm(conj(t.coeff), t.positions, adjoint.(t.operators))
+Base.adjoint(t::OpTerm) = OpTerm(_adjoint(t.coeff), t.positions, adjoint.(t.operators))
 
-OpTerm(coeff::Number, pairs::Pair{Int,<:AbstractMatrix}...) =
+OpTerm(coeff, pairs::Pair{Int,<:AbstractMatrix}...) =
 	OpTerm(coeff, Int[first.(pairs)...], AbstractMatrix[last.(pairs)...])
 
 """
@@ -56,7 +98,7 @@ OpTerm(coeff::Number, pairs::Pair{Int,<:AbstractMatrix}...) =
 
 Convenience constructor of [`OpTerm`](@ref) (coefficient defaults to 1).
 """
-term(coeff::Number, pairs::Pair{Int,<:AbstractMatrix}...) = OpTerm(coeff, pairs...)
+term(coeff, pairs::Pair{Int,<:AbstractMatrix}...) = OpTerm(coeff, pairs...)
 term(pairs::Pair{Int,<:AbstractMatrix}...) = term(one(Float64), pairs...)
 
 """
@@ -68,7 +110,8 @@ A validated collection of [`OpTerm`](@ref)s on a lattice with physical dimension
 `ds::Vector{Int}`. The terms are validated against `ds` on construction (positions in
 range, every operator matching the local dimension), so an `OpSum` is self-consistent
 by construction; it is the input of `MPOHamiltonian(::OpSum)`. The scalar type `T` is
-the promoted coefficient type of the terms. An empty `OpSum(ds)` serves as the starting
+the promoted scalar type of the term operators and coefficients (a time-dependent
+[`Coeff`](@ref) keeps its own function). An empty `OpSum(ds)` serves as the starting
 point of an incremental build: terms are accumulated with `+=`
 (`OpSum + OpTerm -> OpSum`), every added term is validated against the lattice. Terms
 can also be summed lattice-free (`OpTerm + OpTerm -> OpSum`, `OpTerm + OpSum`,
@@ -83,6 +126,20 @@ end
 OpSum(ds::AbstractVector{Int}) = OpSum{Float64}(OpTerm{Float64}[], collect(Int, ds))
 
 scalartype(::Type{OpSum{T}}) where {T} = T
+# dynamically probed: promote over the terms (function coefficients probed at t = 0)
+scalartype(s::OpSum) = isempty(s.data) ? Float64 :
+	reduce((a, b) -> promote_type(a, b), (scalartype(t) for t in s.data))
+
+"""
+	isconstant(term)
+	isconstant(sum)
+
+Whether the coefficient(s) of an [`OpTerm`](@ref) / [`OpSum`](@ref) are
+time-independent. Time-dependent terms are only supported by
+[`trotter_propagator`](@ref); every other consumer requires `isconstant == true`.
+"""
+isconstant(t::OpTerm) = isconstant(t.coeff)
+isconstant(s::OpSum) = all(isconstant, s.data)
 
 phydims(x::OpSum) = x.ds
 phydim(x::OpSum, site) = x.ds[site]
@@ -92,7 +149,10 @@ Base.:(==)(a::OpSum, b::OpSum) = a.ds == b.ds && a.data == b.data
 Base.adjoint(s::OpSum) = OpSum(s.ds, adjoint.(s.data))
 
 _convert_term(::Type{T}, t::OpTerm{T}) where {T} = t
-_convert_term(::Type{T}, t::OpTerm) where {T} = OpTerm(T(t.coeff), t.positions, t.operators)
+_convert_term(::Type{T}, t::OpTerm) where {T} =
+	OpTerm(_convert_coeff(T, t.coeff), t.positions,
+		   [convert(Matrix{T}, op) for op in t.operators])
+_convert_coeff(::Type{T}, c::Coeff) where {T} = isconstant(c) ? Coeff(convert(T, c.f)) : c
 
 # validated assembly of an OpSum from a lattice and a term list (scalar types promoted)
 function _opsum(ds::Vector{Int}, data::Vector{<:OpTerm})

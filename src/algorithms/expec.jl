@@ -78,6 +78,7 @@ contracted (sites in between the term's operators pass the environment through u
 	[`expectationvalue`](@ref) instead.
 """
 function expectation(op::OpTerm, ψ::CanonicalMPS)
+	_check_constant(op)
 	L = length(ψ)
 	firstpos, lastpos = first(op.positions), last(op.positions)
 	(1 <= firstpos && lastpos <= L) || throw(BoundsError())
@@ -109,7 +110,7 @@ function expectation(op::OpTerm, ψ::CanonicalMPS)
 	for _ in 1:firstpos-1
 		w .*= s2
 	end
-	return op.coeff * dot(w, diag(e))
+	return op.coeff.f * dot(w, diag(e))
 end
 
 # crossed-physical-index contraction of `op` into `ρ` between the pre-computed trace
@@ -194,11 +195,12 @@ reuses the pre-computed trace environments of `ρ` across many observables.
 """
 expectation(op::OpTerm, ρ::CanonicalMPO) = expectation(op, ρ, TraceCache(ρ))
 function expectation(op::OpTerm, ρ::CanonicalMPO, cache::TraceCache)
+	_check_constant(op)
 	(ρ === cache.ρ) || throw(ArgumentError("the cache was built for a different ρ"))
 	firstpos, lastpos = first(op.positions), last(op.positions)
 	(1 <= firstpos && lastpos <= length(ρ)) || throw(BoundsError())
 	# the cache environments and the support walk carry the per-site `scaling` already
-	return op.coeff * _op_trace_raw(op, ρ, cache.left[firstpos], cache.right[lastpos+1])
+	return op.coeff.f * _op_trace_raw(op, ρ, cache.left[firstpos], cache.right[lastpos+1])
 end
 
 # raw (scale-free) trace of a CanonicalMPO
@@ -251,6 +253,7 @@ function expectationvalue(h::AbstractMPO, ρ::CanonicalMPO)
 end
 
 function expectationvalue(op::OpTerm, ψ::CanonicalMPS)
+	_check_constant(op)
 	L = length(ψ)
 	firstpos, lastpos = first(op.positions), last(op.positions)
 	(1 <= firstpos && lastpos <= L) || throw(BoundsError())
@@ -271,14 +274,15 @@ function expectationvalue(op::OpTerm, ψ::CanonicalMPS)
 	end
 	s = ψ.s[firstpos]
 	ismissing(s) && throw(ArgumentError("Schmidt values left of site $firstpos are not initialized"))
-	return op.coeff * dot(abs2.(s), diag(e)) / _dot(ψ, ψ)
+	return op.coeff.f * dot(abs2.(s), diag(e)) / _dot(ψ, ψ)
 end
 
 function expectationvalue(op::OpTerm, ρ::CanonicalMPO, cache::TraceCache = TraceCache(ρ))
+	_check_constant(op)
 	(ρ === cache.ρ) || throw(ArgumentError("the cache was built for a different ρ"))
 	firstpos, lastpos = first(op.positions), last(op.positions)
 	(1 <= firstpos && lastpos <= length(ρ)) || throw(BoundsError())
-	num = op.coeff * _op_trace_raw(op, ρ, cache.left[firstpos], cache.right[lastpos+1])
+	num = op.coeff.f * _op_trace_raw(op, ρ, cache.left[firstpos], cache.right[lastpos+1])
 	# the raw trace of ρ is the single entry of the completed left environment
 	return num / only(cache.left[length(ρ)+1])
 end

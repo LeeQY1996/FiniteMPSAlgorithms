@@ -263,3 +263,47 @@ end
 	s5 = s4 + term(0.5, 3 => _SX)
 	@test s5.ds == [2, 2, 2]
 end
+
+@testset "time-dependent OpTerm/OpSum" begin
+	σx = Float64[0 1; 1 0]
+	σz = Float64[1 0; 0 -1]
+	# Coeff: constants ignore t, functions evaluate; isconstant and probed scalartype
+	c1 = Coeff(2.5)
+	c2 = Coeff(t -> 1.5 * exp(-0.7 * t))
+	@test c1(123.0) == 2.5
+	@test c2(1.0) ≈ 1.5 * exp(-0.7)
+	@test isconstant(c1) && !isconstant(c2)
+	@test scalartype(c1) == Float64 && scalartype(c2) == Float64
+	@test scalartype(Coeff(t -> im * t)) == ComplexF64
+	@test Coeff(3) == 3 && 3 == Coeff(3) && !(Coeff(3) == 4)
+	# conj: constants conjugate, functions conjugate pointwise
+	@test conj(Coeff(2.5im)) == -2.5im
+	@test conj(Coeff(t -> im * exp(-t)))(2.0) ≈ -im * exp(-2.0)
+	# a bare function is wrapped; the storage type is promoted with the probed coefficient
+	gfun = t -> im * exp(-t)
+	t = OpTerm(gfun, 1 => σx)
+	@test t.coeff isa Coeff && !isconstant(t)
+	@test scalartype(t) == ComplexF64 && eltype(t.operators[1]) == ComplexF64
+	@test t.coeff(0.7) ≈ im * exp(-0.7)
+	@test OpTerm(gfun, 1 => σx) == t   # the same function object compares equal
+	# adjoint conjugates the coefficient pointwise
+	ta = adjoint(t)
+	@test !isconstant(ta)
+	@test ta.coeff(0.7) ≈ -im * exp(-0.7)
+	@test ta.positions == t.positions && ta.operators == adjoint.(t.operators)
+	# OpSum: isconstant over the terms, dynamically probed scalartype, term-wise adjoint
+	s = OpTerm(1.0, 1 => σz) + OpTerm(t -> im * exp(-t), 2 => σz)
+	@test !isconstant(s) && isconstant(OpTerm(1.0, 1 => σz))
+	@test scalartype(s) == ComplexF64
+	sa = adjoint(s)
+	@test sa.data[1].coeff == 1.0 && !isconstant(sa.data[2])
+	@test sa.data[2].coeff(0.3) ≈ conj(im * exp(-0.3))
+	# storage promotion: a complex-function coefficient promotes real operators
+	sc = OpSum([2, 2], [OpTerm(1.0, 1 => σx), OpTerm(t -> im * t, 2 => σx)])
+	@test scalartype(sc) == ComplexF64
+	@test all(k -> eltype(sc.data[k].operators[1]) == ComplexF64, 1:2)
+	@test isconstant(sc.data[1]) && !isconstant(sc.data[2])
+	# consumers other than trotter_propagator reject time-dependent terms
+	@test_throws ArgumentError MPOHamiltonian([2, 2], OpTerm(1.0, 1 => σx),
+											  OpTerm(t -> im * t, 2 => σx))
+end
