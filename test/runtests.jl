@@ -4,6 +4,8 @@ using Logging
 using Random
 using TensorOperations
 using FiniteMPSAlgorithms
+# not exported: access the settings module via `using FiniteMPSAlgorithms.Defaults`
+using FiniteMPSAlgorithms.Defaults
 # disambiguate from LinearAlgebra's SVD/QR/LQ factorization objects
 using FiniteMPSAlgorithms: SVD, QR, QRpos, LQ, LQpos, SDD, Polar, max_bonddims, l_LL, r_RR
 

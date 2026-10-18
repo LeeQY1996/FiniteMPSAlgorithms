@@ -338,9 +338,9 @@ end
 	@test Defaults.tol == 1.0e-12
 	@test Defaults.maxiter == 100
 
-	# DefaultMultAlg
-	@test DefaultMultAlg isa SVDCompression
-	@test DefaultMultAlg.trunc == Defaults.alg_trunc()
+	# DefaultMultAlg (not exported, access via module)
+	@test FiniteMPSAlgorithms.DefaultMultAlg isa SVDCompression
+	@test FiniteMPSAlgorithms.DefaultMultAlg.trunc == Defaults.alg_trunc()
 
 	# truncation scheme types
 	tr = truncdimcutoff(8, 1e-10)

@@ -82,8 +82,8 @@ svdguess_hadamard
 ```@docs
 SVDCompression
 DMRG1
-DefaultMultAlg
-Defaults
+FiniteMPSAlgorithms.DefaultMultAlg
+FiniteMPSAlgorithms.Defaults
 ALSConvergenceInfo
 iterative_compute!
 leftsweep!
