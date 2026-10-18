@@ -1,3 +1,5 @@
+using FiniteMPSAlgorithms.Models
+
 @testset "models (finite 1d Hamiltonians)" begin
 	# ---- spin-1/2 operators ----
 	@test σx() == ComplexF64[0 1; 1 0]

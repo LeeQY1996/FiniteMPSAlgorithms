@@ -671,3 +671,70 @@ end
 	@test HadamardTDVP2(stepsize=-0.1, trunc=truncdim(3)).trunc == truncdim(3)
 	@test HadamardTDVP2(stepsize=-0.1).ishermitian == false
 end
+
+@testset "TaylorCluster" begin
+	# --- square chain: TC N=1 (no extension) is the WI operator, accuracy ladder in N ---
+	# (operator-level checks: contract each evolved MPO into the full 2^L matrix)
+	Random.seed!(456)
+	L = 4
+	t = term(1.0, 1 => Matrix(_SZ)) + term(1.0, 1 => Matrix(_SX))
+	for i in 1:L-1
+		t = t + term(1.0, i => Matrix(_SX), i + 1 => Matrix(_SX))
+	end
+	h = MPOHamiltonian(t)
+	Hd = todense(MPO(h))
+	ψ0 = randommps(ComplexF64, fill(2, L); D = 4)
+	tr = truncdimcutoff(16, 1.0e-12)
+	dt = -im * 0.05
+	Uexact = exp(Matrix(Hd * dt))
+
+	# TC N=1 without extension is the WI evolution operator (identical chain product)
+	e_wi = opnorm(todense(timeevompo(h, dt, WI())) - Uexact)
+	e1 = opnorm(todense(timeevompo(h, dt, TaylorCluster(N = 1, extension = false))) - Uexact)
+	@test e1 ≈ e_wi atol = 1.0e-10
+
+	# accuracy ladder: N=2/3 include the exact lower orders and improve in N
+	e2 = opnorm(todense(timeevompo(h, dt, TaylorCluster(N = 2))) - Uexact)
+	e3 = opnorm(todense(timeevompo(h, dt, TaylorCluster(N = 3))) - Uexact)
+	@test e3 < e2 < e1
+	@test e3 < 1.0e-3
+
+	# all extension/compression combinations reproduce the MPSKit-grade operator
+	# (second order for N=2, third for N=3)
+	for ext in (false, true), comp in (false, true)
+		e = opnorm(todense(timeevompo(h, dt,
+			TaylorCluster(N = 2, extension = ext, compression = comp))) - Uexact)
+		@test e < 1.0e-2
+	end
+	@test opnorm(todense(timeevompo(h, dt, TaylorCluster(N = 3, extension = true,
+		compression = true))) - Uexact) < 1.0e-3
+
+	# application path: the timeevo machinery runs the evolved MPOs on a state
+	ψwii = timeevo(ψ0, h, dt, WII(); trunc = tr)
+	ψt = timeevo(ψ0, h, dt, TaylorCluster(N = 3); trunc = tr)
+	@test distance(ψt, ψwii) < 1.0e-2
+	# TaylorCluster does not compose into the ComplexStepper (as in MPSKit, where the
+	# cluster expansion has no two-half-step composer; the order N covers the accuracy)
+	@test_throws MethodError ComplexStepper(TaylorCluster(N = 2))
+	ψc = timeevo(ψ0, h, dt, ComplexStepper(WII()); trunc = tr)
+	@test norm(ψc) > 0
+
+	# --- rectangular chain: dead boundary channels must not fuse into the clusters ---
+	Random.seed!(555)
+	o1 = Matrix{Any}(undef, 2, 3); o1 .= 0.0
+	o1[1, 1] = 1; o1[2, 3] = 1; o1[1, 2] = _SX
+	o2 = Matrix{Any}(undef, 3, 2); o2 .= 0.0
+	o2[1, 1] = 1; o2[3, 2] = 1; o2[1, 2] = 0.5 * _SZ; o2[2, 2] = _SX
+	hrect = MPOHamiltonian([SchurMPOTensor(o1), SchurMPOTensor(o2)])
+	Hr = 0.5 * kron(I(2), _SZ) + kron(_SX, _SX)
+	Ur = exp(Matrix(-im * Hr * 0.1))
+	for N in 1:3
+		e = opnorm(todense(timeevompo(hrect, -im * 0.1, TaylorCluster(N = N))) - Ur)
+		@test e < 1.0e-2
+	end
+	# TC N=1 equals WI on the rectangular chain as well
+	e_wir = opnorm(todense(timeevompo(hrect, -im * 0.1, WI())) - Ur)
+	e_t1r = opnorm(todense(timeevompo(hrect, -im * 0.1,
+		TaylorCluster(N = 1, extension = false))) - Ur)
+	@test e_t1r ≈ e_wir atol = 1.0e-10
+end

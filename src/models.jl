@@ -13,6 +13,16 @@
 # All of them are short-range models on the local space `ℂ²` (spins) or `ℂ⁴` (Hubbard);
 # periodic boundaries and longer-range or disordered couplings are left to the caller, who
 # can assemble the terms of an `OpSum` directly (see `MPOHamiltonian(::OpSum)`).
+#
+# The builders live in their own `Models` module: load them with
+# `using FiniteMPSAlgorithms.Models`.
+module Models
+
+using LinearAlgebra
+using ..FiniteMPSAlgorithms
+
+export σx, σy, σz, Sx, Sy, Sz,
+	heisenberg_hamiltonian, tfim_hamiltonian, fermi_hubbard
 
 # ---- spin-1/2 operators ----
 
@@ -142,3 +152,4 @@ function fermi_hubbard(L::Int; t::Real=1.0, U::Real=0.0, μ::Real=0.0,
 	end
 	return MPOHamiltonian(terms)
 end
+end # module

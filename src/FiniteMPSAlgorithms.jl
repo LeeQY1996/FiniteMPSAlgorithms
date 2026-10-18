@@ -38,9 +38,6 @@ export AbstractMPS, AbstractMPO, MPSTensor, MPOTensor, CanonicalMPS, CanonicalMP
 	changebond!, truncate!, identitympo, prodmpo, randommpo, hadamard, ⊙,
 	copyphydims,
 	tomps, tompo
-# models
-export σx, σy, σz, Sx, Sy, Sz,
-	heisenberg_hamiltonian, tfim_hamiltonian, fermi_hubbard
 # algorithms
 export mult, add, compress, compress!,
 	svdguess_mult, svdguess_add, svdguess_compress, svdguess_hadamard,
@@ -52,10 +49,10 @@ export mult, add, compress, compress!,
         SingleSiteUpdate, TwoSiteUpdate, ALSLinSolve2,
         Seq2Seq, ALSLinSolve,
 	ac_prime, c_prime, Heff,
-	FirstOrderStepper, SecondOrderStepper,
+	FirstOrderStepper, SecondOrderStepper, GeneralStepper,
 	iterative_compute!, AddCache, MultCache, HadamardCache, LinsolveCache, Seq2SeqCache,
 	TDVPCache, HadamardTDVPCache,
-	WI, WII, ComplexStepper, complex_stepper, timeevompo, timeevo, timeevo!,
+	WI, WII, ComplexStepper, complex_stepper, TaylorCluster, timeevompo, timeevo, timeevo!,
 	linsolve, seq2seq, seq2seq!, sample, amplitude,
 	DMRGCache, ExcitedStateCache, OverlapCache,
 	TraceCache,

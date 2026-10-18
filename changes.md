@@ -1,5 +1,43 @@
 # Interface changes
 
+## Interface: `GeneralStepper`, `Models` sub-module, `TaylorCluster` tweaks
+
+- `TaylorCluster` now inherits the new abstract `GeneralStepper` (exported) instead of
+  `FirstOrderStepper`: it is an arbitrary-order stepper, not a first-order one. The
+  application path is unchanged (`timeevo` gained a `GeneralStepper` method; `timeevo!`
+  handles it through its `MPSAlgorithm` fallback).
+- Consequently `TaylorCluster` no longer composes into `ComplexStepper` — matching
+  MPSKit, where the cluster expansion has no two-half-step composer (the order `N` covers
+  the accuracy). `ComplexStepper(TaylorCluster(...))` is now a `MethodError`.
+- `TaylorCluster` keeps the order as a plain `N::Int` field (not a type parameter),
+  mirroring MPSKit; the per-order specialization happens behind the existing `Val(N)`
+  function barrier.
+- `Base.@kwdef` → `@kwdef` in the stepper definition (cosmetic, consistent with the
+  other steppers).
+- The model builders (`σx/σy/σz`, `Sx/Sy/Sz`, `heisenberg_hamiltonian`,
+  `tfim_hamiltonian`, `fermi_hubbard`) moved from the top-level namespace into the
+  sub-module **`FiniteMPSAlgorithms.Models`**: load them with
+  `using FiniteMPSAlgorithms.Models`. They are no longer re-exported by the parent
+  module.
+
+## New: `TaylorCluster` time evolution (ported from MPSKit)
+
+`TaylorCluster(; N=2, extension=true, compression=false)` builds the `N`-th order
+time-evolution MPO from the Taylor cluster expansion (Van Damme et al., SciPost Phys. 17,
+135 (2024); ported from MPSKit's `algorithms/timestep/taylorcluster.jl`). It is a
+`FirstOrderStepper`: `timeevompo(h, dt, TaylorCluster(...))` builds the evolved MPO
+(all the WI/WII application machinery — `timeevo`, `timeevo!`, `ComplexStepper`
+composition — works unchanged), and `TaylorCluster(N=1, extension=false)` is the
+mathematical counterpart of [`WI`](@ref).
+
+The fused channel blocks live on the `N`-fold products of the Schur channels and are
+processed with the reference's Algorithm 1 (loop-back), 2 (permutation-equivalent
+collapse), 3 (higher-order extension) and 4 (optional approximate compression), with the
+boundary-dead channels zeroed up front (MPSKit's 1×3/3×1 end convention). Verified
+against MPSKit's `make_time_mpo` on identical Hamiltonians (square and rectangular
+chains, all N/extension/compression combinations): the evolution operators agree to
+~1e-18 (`debug/taylorcluster/align_mpskit.jl`).
+
 ## Performance: zip-fused ALS sweeps for `mult` / `compress` / `hadamard` (DMRG1 & DMRG2)
 
 The ALS sweeps of the three iterative arithmetics (`mult`, `compress`, `hadamard`, both

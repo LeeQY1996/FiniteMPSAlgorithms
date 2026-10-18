@@ -4,6 +4,7 @@
 
 abstract type FirstOrderStepper <: MPSAlgorithm end
 abstract type SecondOrderStepper <: MPSAlgorithm end
+abstract type GeneralStepper <: MPSAlgorithm end
 
 """
 	WI(; tol=Defaults.tol, maxiter=Defaults.maxiter)
