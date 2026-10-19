@@ -40,44 +40,59 @@ end
 
 @testset "tebd" begin
 	Random.seed!(55)
-	# GateOp stores the op verbatim and determines `isunitary` by default;
+	# Gate stores the op verbatim and determines `isunitary` by default;
 	# duplicate positions rejected
 	h = randn(4, 4) + im * randn(4, 4)
-	gg0 = GateOp((1, 2), gate_tensor(h))             # non-unitary input accepted
+	gg0 = Gate((1, 2), gate_tensor(h))             # non-unitary input accepted
 	@test gg0 isa AbstractGate
 	@test !isunitary(gg0)
-	@test_throws ArgumentError GateOp((2, 2), gate_tensor(h))
+	@test_throws ArgumentError Gate((2, 2), gate_tensor(h))
 	# unsorted positions are sorted internally and the operator legs follow along
-	gg1 = GateOp((2, 1), gate_tensor(h))
+	gg1 = Gate((2, 1), gate_tensor(h))
 	@test positions(gg1) == (1, 2)
 	@test gg1.op ≈ permutedims(gate_tensor(h), (2, 1, 4, 3))
 	hh = h + h'                          # hermitian → exp(-im·hh) is unitary
 	U = exp(Matrix(-im * hh))
-	g = GateOp((1, 2), gate_tensor(U))
+	g = Gate((1, 2), gate_tensor(U))
 	@test positions(g) == (1, 2)
 	# adjoint swaps the ket/bra index blocks and conjugates
 	gt = adjoint(g)
 	@test gt.op ≈ permutedims(conj(g.op), (3, 4, 1, 2))
 	# isunitary predicate: checked automatically for the fused operator matrix …
 	@test isunitary(g)
-	@test !isunitary(GateOp((1, 2), gate_tensor(h)))
+	@test !isunitary(Gate((1, 2), gate_tensor(h)))
 	r1 = randn(2, 2) + im * randn(2, 2)
-	@test isunitary(GateOp((3,), exp(Matrix(-im * (r1 + r1')))))
-	@test !isunitary(GateOp((3,), randn(ComplexF64, 2, 2)))
+	@test isunitary(Gate((3,), exp(Matrix(-im * (r1 + r1')))))
+	@test !isunitary(Gate((3,), randn(ComplexF64, 2, 2)))
 	# … trusted verbatim when the keyword is given …
-	@test isunitary(GateOp((1, 2), gate_tensor(h); isunitary=true))
-	@test !isunitary(GateOp((1, 2), gate_tensor(U); isunitary=false))
-	@test isunitary(shift(GateOp((1, 2), gate_tensor(U)), 2))
-	@test !isunitary(shift(GateOp((1, 2), gate_tensor(h)), 2))
+	@test isunitary(Gate((1, 2), gate_tensor(h); isunitary=true))
+	@test !isunitary(Gate((1, 2), gate_tensor(U); isunitary=false))
+	@test isunitary(shift(Gate((1, 2), gate_tensor(U)), 2))
+	@test !isunitary(shift(Gate((1, 2), gate_tensor(h)), 2))
 	# … and controlled by `atol`
 	I2 = Matrix{ComplexF64}(I, 2, 2)
-	@test !isunitary(GateOp((1,), (1 + 1e-6) * I2; atol=1e-10))
-	@test isunitary(GateOp((1,), (1 + 1e-6) * I2; atol=1e-4))
+	@test !isunitary(Gate((1,), (1 + 1e-6) * I2; atol=1e-10))
+	@test isunitary(Gate((1,), (1 + 1e-6) * I2; atol=1e-4))
 
-	# GateOp stores the given op verbatim (caller builds exp);
+	# Gate stores the given op verbatim (caller builds exp);
 	# gate_tensor converts the Kronecker-convention matrix to the documented tensor
-	gg = GateOp((2, 3), gate_tensor(exp(Matrix(-im * hh * 0.1))))
+	gg = Gate((2, 3), gate_tensor(exp(Matrix(-im * hh * 0.1))))
 	@test gg.op ≈ permutedims(reshape(exp(Matrix(-im * hh * 0.1)), 2, 2, 2, 2), (2, 1, 4, 3)) atol = 1e-12
+
+	# matrix constructor: `phydims` per support site, or the full lattice dimensions
+	M = exp(Matrix(-im * hh * 0.1))
+	gm = Gate((2, 3), M, [2, 2])
+	@test gm.op ≈ gg.op atol = 1e-12
+	@test Gate((2, 3), M, [2, 2, 2, 2]).op ≈ gg.op atol = 1e-12
+	@test Gate((2, 3), M, 2).op ≈ gg.op atol = 1e-12
+	@test isunitary(Gate((1,), exp(Matrix(-im * (r1 + r1'))), [2]))
+	# non-uniform local dimensions: a 3-site gate with dims (2, 3, 2)
+	dims3 = (2, 3, 2)
+	M3 = randn(ComplexF64, prod(dims3), prod(dims3))
+	g3m = Gate((1, 2, 3), M3, collect(dims3))
+	@test g3m.op ≈ permutedims(reshape(M3, dims3..., dims3...), (3, 2, 1, 6, 5, 4))
+	@test_throws DimensionMismatch Gate((1, 2), M3, [2, 2])
+	@test_throws ArgumentError Gate((2, 3), M, [2])
 
 	# apply! of an exact unitary vs dense contraction
 	L = 6
@@ -100,7 +115,7 @@ end
 	vref = todense(ψ2)
 	gateAt = Dict{Int,Matrix{ComplexF64}}()
 	for i in 1:2:L-1
-		ggl = GateOp((i, i + 1), gate_tensor(exp(Matrix(-im * hh * 0.07))))
+		ggl = Gate((i, i + 1), gate_tensor(exp(Matrix(-im * hh * 0.07))))
 		gateAt[i] = reshape(permutedims(ggl.op, (2, 1, 4, 3)), 4, 4)
 		apply!(ggl, ψ2; trunc=NoTruncation())
 	end
@@ -163,7 +178,7 @@ end
 	L = 6
 	# a non-unitary op is accepted and stored verbatim
 	h = randn(4, 4) + im * randn(4, 4)
-	gg = GateOp((1, 2), gate_tensor(h))
+	gg = Gate((1, 2), gate_tensor(h))
 	@test gg.op ≈ permutedims(reshape(Matrix{ComplexF64}(h), 2, 2, 2, 2), (2, 1, 4, 3))
 	# adjoint swaps the ket/bra index blocks and conjugates
 	@test adjoint(gg).op ≈ permutedims(conj(gg.op), (3, 4, 1, 2))
@@ -191,7 +206,7 @@ end
 	canonicalize!(ψu)
 	ψuref = todense(ψu)
 	hh = h + h'
-	gu = GateOp((3, 4), gate_tensor(exp(Matrix(-im * hh))))
+	gu = Gate((3, 4), gate_tensor(exp(Matrix(-im * hh))))
 	@test isunitary(gu)
 	Vd = two_site_dense(gu.op, 3, L)
 	apply!(gu, ψu; trunc=NoTruncation())
@@ -205,9 +220,9 @@ end
     hh = randn(4, 4) + im * randn(4, 4)
     hh = hh + hh'
     U = exp(Matrix(-im * hh))
-    g = GateOp((1, 2), gate_tensor(U))
+    g = Gate((1, 2), gate_tensor(U))
     @test g isa AbstractGate
-    @test GateOp((1, 2), gate_tensor(exp(Matrix(-im * hh * 0.1)))) isa AbstractGate
+    @test Gate((1, 2), gate_tensor(exp(Matrix(-im * hh * 0.1)))) isa AbstractGate
     # shift: move gate by 2 sites
     g2 = shift(g, 2)
     @test positions(g2) == (3, 4)
@@ -216,7 +231,7 @@ end
     g3 = shift(g2, -2)
     @test positions(g3) == (1, 2)
     # shift a possibly non-unitary gate
-    gg = GateOp((1, 2), gate_tensor(exp(Matrix(-im * hh * 0.1))))
+    gg = Gate((1, 2), gate_tensor(exp(Matrix(-im * hh * 0.1))))
     gg2 = shift(gg, 1)
     @test positions(gg2) == (2, 3)
 end
@@ -252,17 +267,36 @@ end
 	# contiguous 3-site gate on (2, 3, 4)
 	hh3 = randn(8, 8) + im * randn(8, 8)
 	U3 = exp(Matrix(-im * (hh3 + hh3')))
-	g3 = GateOp((2, 3, 4), gate_tensorN(U3, 3))
+	g3 = Gate((2, 3, 4), gate_tensorN(U3, 3))
 	ψ3 = copy(ψ)
 	apply!(g3, ψ3; trunc=NoTruncation())
 	@test todense(ψ3) ≈ gate_dense(g3.op, (2, 3, 4)) * v0 atol = 1e-10
 	@test iscanonical(ψ3; atol=1e-8)                    # unitary: gauge preserved
 	@test norm(ψ3) ≈ 1 atol = 1e-10
 
+	# single-site gates (N = 1): same local update; a non-unitary gate triggers the
+	# default canonicalize = !isunitary(g)
+	us = randn(ComplexF64, 2, 2)
+	us += us'
+	g1 = Gate((2,), exp(Matrix(-im * us)))
+	ψ1 = copy(ψ)
+	apply!(g1, ψ1; trunc=NoTruncation())
+	@test todense(ψ1) ≈ gate_dense(g1.op, (2,)) * v0 atol = 1e-10
+	@test iscanonical(ψ1; atol=1e-8)
+
+	g1n = Gate((3,), randn(ComplexF64, 2, 2))
+	ψ1n = copy(ψ)
+	apply!(g1n, ψ1n; trunc=NoTruncation())
+	@test todense(ψ1n) ≈ gate_dense(g1n.op, (3,)) * v0 atol = 1e-10
+	@test iscanonical(ψ1n; atol=1e-8)
+	ψ1c = copy(ψ)
+	apply!(g1n, ψ1c; trunc=NoTruncation(), canonicalize=false)
+	@test todense(ψ1c) ≈ todense(ψ1n) atol = 1e-10
+
 	# non-adjacent 4-site gate on (1, 3, 4, 6): gather, apply on the block, scatter
 	hh4 = randn(16, 16) + im * randn(16, 16)
 	U4 = exp(Matrix(-im * (hh4 + hh4')))
-	g4 = GateOp((1, 3, 4, 6), gate_tensorN(U4, 4))
+	g4 = Gate((1, 3, 4, 6), gate_tensorN(U4, 4))
 	ψ4 = copy(ψ)
 	apply!(g4, ψ4; trunc=NoTruncation())
 	@test todense(ψ4) ≈ gate_dense(g4.op, (1, 3, 4, 6)) * v0 atol = 1e-9
@@ -271,7 +305,7 @@ end
 
 	# unsorted positions are sorted internally (legs follow): the input legs here are
 	# given in the (6, 4, 3, 1) order, so the sorted gate equals g4
-	g4s = GateOp((6, 4, 3, 1), permutedims(g4.op, (4, 3, 2, 1, 8, 7, 6, 5)))
+	g4s = Gate((6, 4, 3, 1), permutedims(g4.op, (4, 3, 2, 1, 8, 7, 6, 5)))
 	@test positions(g4s) == (1, 3, 4, 6)
 	@test g4s.op ≈ g4.op
 	ψ4s = copy(ψ)
@@ -280,7 +314,7 @@ end
 
 	# non-unitary 3-site gate: exact state, canonicity restored by the default
 	# canonicalize = !isunitary(g)
-	gn = GateOp((2, 4, 5), gate_tensorN(randn(ComplexF64, 8, 8), 3))
+	gn = Gate((2, 4, 5), gate_tensorN(randn(ComplexF64, 8, 8), 3))
 	@test !isunitary(gn)
 	ψn = copy(ψ)
 	apply!(gn, ψn; trunc=NoTruncation())
@@ -297,7 +331,7 @@ end
 	vu = todense(ψu)
 	hu = randn(ComplexF64, 24, 24)
 	# documented legs (o1, o2, o3 | i1, i2, i3) from the kron-convention matrix
-	gu = GateOp((1, 2, 3), permutedims(reshape(hu, 4, 3, 2, 4, 3, 2), (3, 2, 1, 6, 5, 4)))
+	gu = Gate((1, 2, 3), permutedims(reshape(hu, 4, 3, 2, 4, 3, 2), (3, 2, 1, 6, 5, 4)))
 	apply!(gu, ψu; trunc=NoTruncation())
 	# todense order (site 1 slowest) from the op legs (o1, o2, o3 | i1, i2, i3)
 	Mu = reshape(permutedims(gu.op, (3, 2, 1, 6, 5, 4)), 24, 24)
@@ -313,9 +347,9 @@ end
 	# three overlapping gates merge into one on the union support (2, 3)
 	r2 = randn(2, 2) + im * randn(2, 2); r2 += r2'
 	r3 = randn(2, 2) + im * randn(2, 2); r3 += r3'
-	g1 = GateOp((2,), exp(Matrix(-im * 0.2 * r2)))
-	g2 = GateOp((3,), exp(Matrix(-im * 0.3 * r3)))
-	g3 = GateOp((2, 3), gate_tensor(exp(Matrix(-im * hh))))
+	g1 = Gate((2,), exp(Matrix(-im * 0.2 * r2)))
+	g2 = Gate((3,), exp(Matrix(-im * 0.3 * r3)))
+	g3 = Gate((2, 3), gate_tensor(exp(Matrix(-im * hh))))
 	f = fuse_gates([g1, g2, g3])
 	@test length(f) == 1
 	@test positions(f[1]) == (2, 3)
@@ -331,8 +365,8 @@ end
 	@test iscanonical(ψf; atol=1e-8)
 
 	# gates with disjoint supports commute and are not merged
-	h1 = GateOp((1, 2), gate_tensor(exp(Matrix(-im * hh))))
-	h2 = GateOp((4, 5), gate_tensor(exp(Matrix(-im * hh))))
+	h1 = Gate((1, 2), gate_tensor(exp(Matrix(-im * hh))))
+	h2 = Gate((4, 5), gate_tensor(exp(Matrix(-im * hh))))
 	fd = fuse_gates([h1, h2])
 	@test length(fd) == 2
 	@test positions.(fd) == [(1, 2), (4, 5)]
@@ -340,8 +374,8 @@ end
 	# the boundary gates of repeated Strang layers merge (the adjoint pass)
 	hhA = randn(4, 4) + im * randn(4, 4); hhA += hhA'
 	hhB = randn(4, 4) + im * randn(4, 4); hhB += hhB'
-	half = [GateOp((1, 2), gate_tensor(exp(Matrix(-im * 0.1 * hhA)))),
-			GateOp((2, 3), gate_tensor(exp(Matrix(-im * 0.1 * hhB))))]
+	half = [Gate((1, 2), gate_tensor(exp(Matrix(-im * 0.1 * hhA)))),
+			Gate((2, 3), gate_tensor(exp(Matrix(-im * 0.1 * hhB))))]
 	circ = vcat(half, reverse(half), half, reverse(half))
 	fc = fuse_gates(circ)
 	@test length(fc) < length(circ)
@@ -352,11 +386,11 @@ end
 	@test todense(ψa) ≈ todense(ψb) atol = 1e-10
 
 	# single-site gates are all absorbed once a multi-site gate covers every site
-	single_gate(i) = GateOp((i,), exp(Matrix(-im * 0.1 * (a = randn(ComplexF64, 2, 2); a + a'))))
+	single_gate(i) = Gate((i,), exp(Matrix(-im * 0.1 * (a = randn(ComplexF64, 2, 2); a + a'))))
 	singles = [single_gate(i) for i in 1:L]
 	Hfull = randn(ComplexF64, 2^L, 2^L)
 	Hfull += Hfull'
-	gfull = GateOp(ntuple(identity, L), gate_tensorN(exp(Matrix(-im * 0.05 * Hfull)), L))
+	gfull = Gate(ntuple(identity, L), gate_tensorN(exp(Matrix(-im * 0.05 * Hfull)), L))
 	@test isunitary(gfull)
 	# the full-support gate sits in the middle of the single-site gates
 	circ_all = vcat(singles[1:3], [gfull], singles[4:6])
@@ -376,7 +410,7 @@ end
 	rand_gate(pos::Tuple) = begin
 		n = length(pos)
 		a = randn(ComplexF64, 2^n, 2^n)
-		GateOp(pos, gate_tensorN(exp(Matrix(-im * 0.1 / n * (a + a'))), n))
+		Gate(pos, gate_tensorN(exp(Matrix(-im * 0.1 / n * (a + a'))), n))
 	end
 	circ = AbstractGate[]
 	for n in (1, 2, 3, 2, 1, 3, 2, 1, 2, 3)
@@ -419,15 +453,15 @@ end
     # independent factors and commute, so one Trotter layer is EXACT
     dt = 0.37
     ψ = copy(ψ0)
-    apply!(GateOp((1, 2), gate_tensor(exp(-im * dt * hs[1]))), ψ; trunc=truncdimcutoff(64, 1e-12))
-    apply!(GateOp((3, 4), gate_tensor(exp(-im * dt * hs[3]))), ψ; trunc=truncdimcutoff(64, 1e-12))
+    apply!(Gate((1, 2), gate_tensor(exp(-im * dt * hs[1]))), ψ; trunc=truncdimcutoff(64, 1e-12))
+    apply!(Gate((3, 4), gate_tensor(exp(-im * dt * hs[3]))), ψ; trunc=truncdimcutoff(64, 1e-12))
     Ulayer = kron(exp(-im * dt * hs[1]), exp(-im * dt * hs[3]))
     @test norm(todense(ψ) - Ulayer * v0) / norm(v0) < 1e-12
 
     # second-order Trotter time evolution vs exp(-i t H) from exact diagonalization
     dt = 0.01
     nsteps = 20
-    G(k, τ) = GateOp((pairs[k][1], pairs[k][2]), gate_tensor(exp(-im * τ * hs[k])))
+    G(k, τ) = Gate((pairs[k][1], pairs[k][2]), gate_tensor(exp(-im * τ * hs[k])))
     ψt = copy(ψ0)
     for _ in 1:nsteps
         for k in 1:3
@@ -512,7 +546,7 @@ end
     # long-range unitary gate on a non-adjacent pair vs the dense embedding
     hh = randn(4, 4) + im * randn(4, 4)
     U = exp(Matrix(-im * (hh + hh')))
-    gu = GateOp((2, 5), gate_tensor(U))
+    gu = Gate((2, 5), gate_tensor(U))
     ψu = copy(ψ)
     apply!(gu, ψu; trunc=NoTruncation())
     Vu = two_site_dense_pair(gu.op, 2, 5, L)
@@ -522,7 +556,7 @@ end
     @test norm(ψu) ≈ 1 atol = 1e-10
 
     # long-range non-unitary gate vs the dense embedding (re-canonicalized)
-    ggn = GateOp((2, 5), gate_tensor(randn(ComplexF64, 4, 4)))
+    ggn = Gate((2, 5), gate_tensor(randn(ComplexF64, 4, 4)))
     ψg = copy(ψ)
     apply!(ggn, ψg; trunc=NoTruncation(), canonicalize=true)
     Vg = two_site_dense_pair(ggn.op, 2, 5, L)
@@ -796,7 +830,7 @@ end
     # U(τ) = e^{-i τ ad_H} via the symmetric local-gate sequence
     #   fields(τ/2), even(τ/2), odd(τ/2), odd(τ/2), even(τ/2), fields(τ/2)
     function apply_unitary!(ψ, τ)
-        ev(pos, M) = apply!(GateOp((pos, pos + 1), gate_tensor(exp(Matrix(-im * (τ / 2) * M)))), ψ; trunc=tr)
+        ev(pos, M) = apply!(Gate((pos, pos + 1), gate_tensor(exp(Matrix(-im * (τ / 2) * M)))), ψ; trunc=tr)
         for (pos, M) in fraw; ev(pos, M); end
         for (pos, M) in even; ev(pos, M); end
         for (pos, M) in odd; ev(pos, M); end
@@ -810,7 +844,7 @@ end
     function lindblad_step!(ψ, dt)
         apply_unitary!(ψ, dt / 2)
         for (pos, M) in diss
-            apply!(GateOp((pos, pos + 1), gate_tensor(exp(Matrix(dt * M)))), ψ; trunc=tr, canonicalize=true)
+            apply!(Gate((pos, pos + 1), gate_tensor(exp(Matrix(dt * M)))), ψ; trunc=tr, canonicalize=true)
         end
         apply_unitary!(ψ, dt / 2)
     end

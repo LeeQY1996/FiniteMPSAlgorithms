@@ -1,5 +1,16 @@
 # Interface changes
 
+## Renamed: `GateOp` → `Gate`; new matrix constructor
+
+- The gate type `GateOp` is now `Gate` (exported); `AbstractGate` is unchanged.
+- New constructor `Gate(positions, op::AbstractMatrix, phydims; isunitary=nothing,
+  atol=1.0e-10)` builds the gate from the usual operator matrix (rows = bra,
+  columns = ket) by reshaping it with the local physical dimensions. `phydims` is
+  either the `N` support dimensions in the order of `positions`, the full lattice
+  dimensions indexed by position (so `phydims(ψ)` can be passed directly), or a
+  single integer for a uniform local dimension on every support site. The matrix
+  must be `D × D` with `D = prod(dims)`.
+
 ## Changed: `GateOp` carries `isunitary`; `fuse_gates` has no `maxsites`; `apply!` canonicalizes by unitarity
 
 - `GateOp` gains an `isunitary::Bool` field. The constructor is now

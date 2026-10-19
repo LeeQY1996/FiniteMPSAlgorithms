@@ -117,7 +117,7 @@ complex_stepper
 ## Gates (TEBD)
 
 ```@docs
-GateOp
+Gate
 isunitary
 swap!
 positions

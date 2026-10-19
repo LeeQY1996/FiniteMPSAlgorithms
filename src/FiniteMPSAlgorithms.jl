@@ -62,7 +62,7 @@ export mult, add, compress, compress!,
         CAMPS, CliffordGate, PauliTerm,
         ALSRecon, ALSRecon2, ALSReconCache, reconstruct, reconstruct!
 # gates
-export AbstractGate, GateOp, isunitary, apply!, swap!, positions, shift, fuse_gates, trotter_propagator
+export AbstractGate, Gate, isunitary, apply!, swap!, positions, shift, fuse_gates, trotter_propagator
 
 include("tensorops/tensorops.jl")
 include("defaults.jl")

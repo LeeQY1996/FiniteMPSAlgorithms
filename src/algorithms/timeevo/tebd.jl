@@ -1,4 +1,4 @@
-# TEBD: quantum gates (AbstractGate / GateOp), their application (apply!) and site
+# TEBD: quantum gates (AbstractGate / Gate), their application (apply!) and site
 # swaps (swap!), gate fusion (fuse_gates) and the Trotter propagator circuit builder
 # (trotter_propagator). Minimal TEBD building blocks; the time-evolution loop is
 # driven by the caller.
@@ -34,7 +34,8 @@ function Base.adjoint(g::G) where {G<:AbstractGate}
 end
 
 """
-	GateOp(positions, op; isunitary=nothing, atol=1e-10)
+	Gate(positions, op; isunitary=nothing, atol=1e-10)
+	Gate(positions, op::AbstractMatrix, phydims; isunitary=nothing, atol=1e-10)
 
 A quantum gate acting on the `N` distinct sites `positions`. The operator `op` is a
 rank-`2N` tensor `(i1', …, iN', i1, …, iN)` — all bra (output) indices first, all
@@ -43,18 +44,26 @@ The positions only have to be distinct: unsorted inputs are sorted internally (t
 operator legs follow along). The input is copied and materialized as a dense array of
 concrete element type.
 
+The second form takes the usual operator matrix `op` with rows = bra and columns = ket
+(Kronecker convention, `positions[1]` the slowest index) and reshapes it with the
+local physical dimensions `phydims`: a vector of length `N` gives the dimensions of
+the support sites in the order of `positions`, while a longer vector is the full
+lattice dimensions indexed by position (`phydims[p]`), so `phydims(ψ)` can be passed
+directly. A plain integer gives the same local dimension on every support site. The
+matrix must be `D × D` with `D = prod(dims)`.
+
 The gate carries an `isunitary::Bool` field: with the default `isunitary = nothing` it
 is determined by checking `U†·U ≈ I` (within `atol`) on the fused operator matrix; a
 `Bool` is trusted as given. Since a non-unitary gate does not preserve the canonical
 form under the Hastings update, [`apply!`](@ref) re-canonicalizes the state with
 `truncate!` iff `!isunitary(g)` (the `canonicalize` keyword default).
 """
-struct GateOp{N, T, M} <: AbstractGate{N, T}
+struct Gate{N, T, M} <: AbstractGate{N, T}
 	positions::NTuple{N, Int}
 	op::Array{T, M}   # (i1', …, iN', i1, …, iN) with M == 2N
 	isunitary::Bool
 
-	function GateOp{N, T, M}(positions::NTuple{N, Int}, op::AbstractArray,
+	function Gate{N, T, M}(positions::NTuple{N, Int}, op::AbstractArray,
 							 isunitary::Bool) where {N, T, M}
 		M == 2N || throw(ArgumentError("the operator tensor must have rank $(2N)"))
 		ndims(op) == M || throw(DimensionMismatch("the operator tensor must have rank $M"))
@@ -63,7 +72,7 @@ struct GateOp{N, T, M} <: AbstractGate{N, T}
 	end
 end
 
-function GateOp(positions::NTuple{N, Int}, op::AbstractArray;
+function Gate(positions::NTuple{N, Int}, op::AbstractArray;
 				isunitary::Union{Bool,Nothing}=nothing, atol::Real=1.0e-10) where {N}
 	M = ndims(op)
 	M == 2N || throw(ArgumentError("the operator tensor must have rank $(2N)"))
@@ -77,7 +86,30 @@ function GateOp(positions::NTuple{N, Int}, op::AbstractArray;
 		positions = ntuple(i -> positions[perm[i]], Val(N))
 	end
 	u = isnothing(isunitary) ? _isunitary_op(op, atol) : isunitary
-	return GateOp{N, T, M}(positions, op, u)
+	return Gate{N, T, M}(positions, op, u)
+end
+
+# matrix form: `phydims` may be a single uniform dimension, the `N` support
+# dimensions in the order of `positions`, or the full lattice dimensions
+function Gate(positions::NTuple{N, Int}, op::AbstractMatrix, phydims;
+			  isunitary::Union{Bool,Nothing}=nothing, atol::Real=1.0e-10) where {N}
+	dims = if phydims isa Integer
+		ntuple(_ -> Int(phydims), Val(N))
+	elseif length(phydims) == N
+		ntuple(i -> Int(phydims[i]), Val(N))
+	else
+		(maximum(positions) <= length(phydims)) || throw(ArgumentError(
+			"phydims has $(length(phydims)) entries: give the $N support dimensions or the full lattice dimensions"))
+		ntuple(i -> Int(phydims[positions[i]]), Val(N))
+	end
+	D = prod(dims)
+	size(op) == (D, D) || throw(DimensionMismatch(
+		"the operator matrix must be $(D)×$(D) for the local dimensions $(dims), got $(size(op))"))
+	# the column-major reshape makes the LAST support site the fastest digit; flip to
+	# the gate convention (support site 1 the first leg / slowest index)
+	perm = (ntuple(i -> N + 1 - i, Val(N))..., ntuple(i -> 2N + 1 - i, Val(N))...)
+	tensor = permutedims(reshape(op, dims..., dims...), perm)
+	return Gate(positions, tensor; isunitary, atol)
 end
 
 # whether the fused (dn × dn) operator matrix satisfies U†·U ≈ I within atol
@@ -88,12 +120,12 @@ function _isunitary_op(op::AbstractArray, atol::Real)
 end
 
 """
-	isunitary(g::GateOp) -> Bool
+	isunitary(g::Gate) -> Bool
 
 Whether the gate operator of `g` is unitary — the `isunitary` field, determined at
 construction (checked within `atol`, or trusted from the keyword).
 """
-isunitary(g::GateOp) = g.isunitary
+isunitary(g::Gate) = g.isunitary
 
 # ── N-site gate application (Hastings update, aligned with TEMPO/GTEMPO; the
 #    multi-site block sweep follows MPSSimulator) ─────────────────────────────────
@@ -357,7 +389,7 @@ function _try_gate_mul(a::AbstractGate, b::AbstractGate)
 		isnothing(i) ? size(b.op, findfirst(==(p), collect(positions(b)))) : size(a.op, i)
 	end
 	# identity embeddings and operator products preserve unitarity
-	return GateOp(Tuple(pos), reshape(r, dims..., dims...);
+	return Gate(Tuple(pos), reshape(r, dims..., dims...);
 				  isunitary=a.isunitary && b.isunitary)
 end
 
@@ -385,7 +417,7 @@ end
 _fuse_adjoints(gs::AbstractVector{<:AbstractGate}) = [adjoint(g) for g in reverse(gs)]
 
 """
-	fuse_gates(gates::AbstractVector{<:AbstractGate}) -> Vector{GateOp}
+	fuse_gates(gates::AbstractVector{<:AbstractGate}) -> Vector{Gate}
 
 Fuse a gate sequence (circuit) into as few gates as possible (aligned with
 QuantumSpins): every gate is absorbed backwards into the closest earlier gate with an
@@ -434,7 +466,7 @@ function _expm_terms(ts::Vector{<:OpTerm}, τ::Real)
 	for t in ts
 		push!(get!(groups, t.positions, Vector{OpTerm}()), t)
 	end
-	gs = GateOp[]
+	gs = Gate[]
 	for pos in sort!(collect(keys(groups)))
 		tsk = groups[pos]
 		H = tsk[1].coeff.f .* kron(tsk[1].operators...)
@@ -446,7 +478,7 @@ function _expm_terms(ts::Vector{<:OpTerm}, τ::Real)
 		# the column-major reshape makes the LAST support site the fastest digit; flip
 		# to the gate convention (support site 1 the first leg / slowest index)
 		perm = (ntuple(i -> n + 1 - i, Val(n))..., ntuple(i -> 2n + 1 - i, Val(n))...)
-		push!(gs, GateOp(Tuple(pos), permutedims(reshape(exp(Matrix(τ * H)), dims..., dims...), perm)))
+		push!(gs, Gate(Tuple(pos), permutedims(reshape(exp(Matrix(τ * H)), dims..., dims...), perm)))
 	end
 	return gs
 end
@@ -503,7 +535,7 @@ end
 
 """
 	trotter_propagator(ham::OpSum, tspan::Tuple{<:Real,<:Real};
-					   order=2, stepsize=0.01) -> Vector{GateOp}
+					   order=2, stepsize=0.01) -> Vector{Gate}
 
 Build the gate sequence (circuit) of the Trotter-Suzuki propagator `exp(τ · ham)` over
 the real interval `tspan` in steps of length `stepsize` (aligned with QuantumSpins;
@@ -540,7 +572,7 @@ function trotter_propagator(ham::OpSum, tspan::Tuple{<:Real,<:Real};
 	τ = tf - ti
 	nsteps = max(round(Int, abs(τ / stepsize)), 1)
 	dτ = τ / nsteps
-	circuit = GateOp[]
+	circuit = Gate[]
 	for i in 1:nsteps
 		append!(circuit, _trotter_layer(ts, ti + (i - 1) * dτ, dτ, p; constant))
 	end
