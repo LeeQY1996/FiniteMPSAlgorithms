@@ -560,9 +560,10 @@ end
 		Hd .+= reshape(kron(factors...), d^L, d^L)
 	end
 
-	# one Strang step on a nearest-neighbor hamiltonian: even(τ/2), odd(τ), even(τ/2)
+	# one Strang step on a nearest-neighbor hamiltonian: even(τ/2), odd(τ), even(τ/2).
+	# Real-time evolution: the hamiltonian is scaled to `-im·H` and the time is real.
 	t = 0.1
-	gs = trotter_propagator(ham, (0, -im * t); order=2, stepsize=t)
+	gs = trotter_propagator(-im * ham, (0, t); order=2, stepsize=t)
 	@test length(gs) == 4
 	@test positions.(gs) == [(2, 3), (1, 2), (3, 4), (2, 3)]
 	@test gs[1].op ≈ gate_tensor(exp(-im * (t / 2) * hb[2])) atol = 1e-12
@@ -576,22 +577,34 @@ end
 	apply!(gs, ψ; trunc=NoTruncation())
 	@test norm(todense(ψ) - exp(-im * t * Hd) * v0) / norm(v0) < 5e-3
 
+	# imaginary-time evolution: pass `-ham` with a real tspan
+	β = 0.2
+	gi = trotter_propagator(-ham, (0, β); order=2, stepsize=β)
+	ψi = copy(ψ0)
+	apply!(gi, ψi; trunc=NoTruncation())
+	vi = todense(ψi)
+	vexp = exp(-β * Hd) * v0
+	@test norm(vi / norm(vi) - vexp / norm(vexp)) < 1e-2
+
+	# times are real: a complex tspan is rejected
+	@test_throws MethodError trotter_propagator(ham, (0, -im * t))
+
 	# multiple steps: accumulate layers of length stepsize
-	t = 0.3
-	gsm = trotter_propagator(ham, (0, -im * t); order=2, stepsize=0.1)
+	stepsize = 0.3
+	gsm = trotter_propagator(-im * ham, (0, stepsize); order=2, stepsize=0.1)
 	@test length(gsm) == 12          # 3 steps × 4 gates
 	ψm = copy(ψ0)
 	apply!(gsm, ψm; trunc=NoTruncation())
-	@test norm(todense(ψm) - exp(-im * t * Hd) * v0) / norm(v0) < 1e-2
+	@test norm(todense(ψm) - exp(-im * stepsize * Hd) * v0) / norm(v0) < 1e-2
 
 	# 4th order (Suzuki fractal) is more accurate than 2nd order at equal time
-	g2 = trotter_propagator(ham, (0, -im * t); order=2, stepsize=t)
-	g4 = trotter_propagator(ham, (0, -im * t); order=4, stepsize=t)
+	g2 = trotter_propagator(-im * ham, (0, stepsize); order=2, stepsize=stepsize)
+	g4 = trotter_propagator(-im * ham, (0, stepsize); order=4, stepsize=stepsize)
 	ψ2 = copy(ψ0)
 	ψ4 = copy(ψ0)
 	apply!(g2, ψ2; trunc=NoTruncation())
 	apply!(g4, ψ4; trunc=NoTruncation())
-	vex = exp(-im * t * Hd) * v0
+	vex = exp(-im * stepsize * Hd) * v0
 	e2 = norm(todense(ψ2) - vex) / norm(vex)
 	e4 = norm(todense(ψ4) - vex) / norm(vex)
 	@test e4 < e2
@@ -600,7 +613,7 @@ end
 	# generic path: a three-site product term produces one gate per support at τ/2 + reversed
 	A1, A2, A3 = rh(), rh(), rh()
 	ham3 = ham + OpTerm(1.0, [1, 2, 3], [A1, A2, A3])
-	gs3 = trotter_propagator(ham3, (0, -im * 0.1); order=2, stepsize=0.1)
+	gs3 = trotter_propagator(-im * ham3, (0, 0.1); order=2, stepsize=0.1)
 	@test positions.(gs3) == [(1, 2), (1, 2, 3), (2, 3), (3, 4), (3, 4), (2, 3), (1, 2, 3), (1, 2)]
 	h13 = kron(A1, kron(A2, A3))
 	Hd3 = Hd + reshape(kron(h13, I2), d^L, d^L)
@@ -612,7 +625,7 @@ end
 	hz = randn(2, 2) + im * randn(2, 2)
 	hz = (hz + hz') / 2
 	hams = ham + OpTerm(1.0, [2], [hz])
-	gss = trotter_propagator(hams, (0, -im * 0.1); order=2, stepsize=0.1)
+	gss = trotter_propagator(-im * hams, (0, 0.1); order=2, stepsize=0.1)
 	@test all(p -> length(p) == 2, positions.(gss))
 	# the even bond (2, 3) carries the absorbed field: h_(2,3) + hz ⊗ I
 	@test gss[1].op ≈ gate_tensor(exp(-im * 0.05 * (hb[2] + kron(hz, I2)))) atol = 1e-12
@@ -640,8 +653,8 @@ end
 	h4 = -0.6 .* kron(ops4...)               # sites (2, 3, 4, 5)
 	Hd5 = kron(h3, I2, I2) + kron(I2, h4)
 	t5 = 0.2
-	g52 = trotter_propagator(ham5, (0, -im * t5); order=2, stepsize=t5)
-	g54 = trotter_propagator(ham5, (0, -im * t5); order=4, stepsize=t5)
+	g52 = trotter_propagator(-im * ham5, (0, t5); order=2, stepsize=t5)
+	g54 = trotter_propagator(-im * ham5, (0, t5); order=4, stepsize=t5)
 	ψ52 = randommps(ComplexF64, fill(d, L5); D=8)
 	canonicalize!(ψ52)
 	v05 = todense(ψ52)
@@ -655,21 +668,22 @@ end
 	@test e54 < e52 / 10
 
 	# time-dependent OpSum: the coefficients are frozen at the layer midpoints; for a
-	# single (self-commuting) term the propagator is exp(∫f · H₀) up to the midpoint rule
+	# single (self-commuting) term the propagator is the imaginary-time evolution
+	# exp(-∫f · H₀) up to the midpoint rule (`-hamt`, real tspan)
 	X = Float64[0 1; 1 0]
 	Y = ComplexF64[0 -im; im 0]
 	f(t) = 2.0 * exp(-1.5 * t)
 	hamt = OpSum(fill(d, L), [OpTerm(f, [1, 2], [X, Y])])
 	@test !isconstant(hamt) && isconstant(ham)
 	tt = 0.4
-	gt = trotter_propagator(hamt, (0.0, tt); order=2, stepsize=0.1)
+	gt = trotter_propagator(-hamt, (0.0, tt); order=2, stepsize=0.1)
 	@test length(gt) == 4                    # 4 steps × 1 gate
 	H0 = kron(kron(X, Y), I2, I2)
-	@test gt[1].op ≈ gate_tensor(exp(0.1 * f(0.05) * kron(X, Y))) atol = 1e-12
+	@test gt[1].op ≈ gate_tensor(exp(-0.1 * f(0.05) * kron(X, Y))) atol = 1e-12
 	ψtd = copy(ψ0)
 	apply!(gt, ψtd; trunc=NoTruncation())
 	cint = 2.0 * (1 - exp(-1.5 * tt)) / 1.5  # ∫₀^tt f
-	@test norm(todense(ψtd) - exp(cint * H0) * v0) / norm(v0) < 5e-3
+	@test norm(todense(ψtd) - exp(-cint * H0) * v0) / norm(v0) < 5e-3
 
 	# every consumer except trotter_propagator rejects time-dependent terms
 	@test_throws ArgumentError MPOHamiltonian(hamt)
@@ -681,8 +695,8 @@ end
 
 	# time-dependent hamiltonian: the accuracy improves with the Suzuki order as
 	# expected — halving the step divides the error by ~4 (order 2) and ~16 (order 4).
-	# Real-time evolution: the coefficients carry the -im factor, so H(t) is
-	# anti-hermitian and the propagator is unitary
+	# Real-time evolution: `hamtd` already is `-im·H(t)`, so it is passed with a real
+	# tspan; H(t) is anti-hermitian and the propagator is unitary
 	hterms = OpTerm[]
 	A1, B1, A2, B2, A3, A4, A5 = rh(), rh(), rh(), rh(), rh(), rh(), rh()
 	push!(hterms, OpTerm(-1.0im, [1, 2], [A1, B1]))                            # constant

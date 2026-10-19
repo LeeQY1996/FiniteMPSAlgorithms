@@ -429,7 +429,7 @@ end
 "one gate per distinct term support: the terms of a support are summed into
 `H` and the gate realizes `exp(τ · H)` on that support (sorted by position). The terms
 must carry constant coefficients (freeze them with [`_freeze_term`](@ref) first)."
-function _expm_terms(ts::Vector{<:OpTerm}, τ::Number)
+function _expm_terms(ts::Vector{<:OpTerm}, τ::Real)
 	groups = Dict{Vector{Int},Vector{OpTerm}}()
 	for t in ts
 		push!(get!(groups, t.positions, Vector{OpTerm}()), t)
@@ -465,27 +465,27 @@ end
 
 "second-order Strang layer for nearest-neighbor hamiltonians: even bonds at `τ/2`,
 odd bonds at `τ`, even bonds at `τ/2`."
-function _trotter_layer_nn(ts::Vector{<:OpTerm}, τ::Number)
+function _trotter_layer_nn(ts::Vector{<:OpTerm}, τ::Real)
 	even, odd = _split_nn(ts)
 	return vcat(_expm_terms(even, τ / 2), _expm_terms(odd, τ), _expm_terms(even, τ / 2))
 end
 
 "generic second-order layer for arbitrary supports: the support gates at `τ/2`, then
 reversed."
-function _trotter_layer_generic(ts::Vector{<:OpTerm}, τ::Number)
+function _trotter_layer_generic(ts::Vector{<:OpTerm}, τ::Real)
 	gs = _expm_terms(ts, τ / 2)
 	return vcat(gs, reverse(gs))
 end
 
 "freeze a term's coefficient at time `tval` (constants pass through)."
-_freeze_term(t::OpTerm, tval::Number) =
+_freeze_term(t::OpTerm, tval::Real) =
 	isconstant(t) ? t : OpTerm(t.coeff(tval), t.positions, t.operators)
 
 "one Trotter layer of half-order `p` over the interval starting at `ti` with duration
 `τ`: `p == 1` is the second-order Strang splitting (the coefficients are frozen at the
 interval midpoint for a time-dependent `ham`), higher orders use the recursive Suzuki
 fractal with fraction `sp = 1 / (4 - 4^(1/(2p-1)))` over the five sub-intervals."
-function _trotter_layer(ts::Vector{<:OpTerm}, ti::Number, τ::Number, p::Integer;
+function _trotter_layer(ts::Vector{<:OpTerm}, ti::Real, τ::Real, p::Integer;
 						constant::Bool)
 	if p == 1
 		tsv = constant ? ts : [_freeze_term(t, ti + τ / 2) for t in ts]
@@ -502,24 +502,36 @@ function _trotter_layer(ts::Vector{<:OpTerm}, ti::Number, τ::Number, p::Integer
 end
 
 """
-	trotter_propagator(ham::OpSum, tspan=(t₀, t₁); order=2, stepsize=0.01) -> Vector{GateOp}
+	trotter_propagator(ham::OpSum, tspan::Tuple{<:Real,<:Real};
+					   order=2, stepsize=0.01) -> Vector{GateOp}
 
 Build the gate sequence (circuit) of the Trotter-Suzuki propagator `exp(τ · ham)` over
-`tspan` in steps of length `stepsize` (aligned with QuantumSpins; algorithm reference:
-"Higher order decompositions of ordered operator exponentials"). Only even `order` is
-supported: `order = 2` is the Strang splitting (a purely nearest-neighbor `ham` uses
-the even/odd bond splitting; the generic case builds one gate per distinct term
-support), higher orders recurse into the Suzuki fractal of five half-order layers.
-One-site terms are absorbed into nearest-neighbor terms (`h ⊗ I`).
+the real interval `tspan` in steps of length `stepsize` (aligned with QuantumSpins;
+algorithm reference: "Higher order decompositions of ordered operator exponentials").
+Only even `order` is supported: `order = 2` is the Strang splitting (a purely
+nearest-neighbor `ham` uses the even/odd bond splitting; the generic case builds one
+gate per distinct term support), higher orders recurse into the Suzuki fractal of five
+half-order layers. One-site terms are absorbed into nearest-neighbor terms
+(`h ⊗ I`).
 
 Time-dependent coefficients ([`Coeff`](@ref) functions) are supported: every (sub-)
-layer freezes the coefficients at its own midpoint. The gates realize the bare
-exponential `exp(τ · H)` per support — pass `tspan = (0, -im * t)` for the real-time
-propagator `exp(-im · t · H)`. The circuit can be compressed with [`fuse_gates`](@ref)
-and applied with [`apply!`](@ref apply!(gs, ψ::CanonicalMPS; kwargs...)).
+layer freezes the coefficients at its own (real) midpoint.
+
+The circuit realizes the *bare* exponential `exp(τ · H)` of the hamiltonian that is
+passed in: the gate on a support is `exp(τ · H_support)`, with `τ` real. Hence the
+physical propagators are obtained by scaling the hamiltonian, while `tspan` stays
+real:
+
+- imaginary-time evolution `exp(-β · H)`: pass `-ham` with `tspan = (0, β)`;
+- real-time evolution `exp(-i · t · H)`: pass `-im * ham` with `tspan = (0, t)`.
+
+Passing `ham` unscaled yields `exp(+τ · H)`, i.e. the imaginary-time propagator of
+`-ham`, not `exp(-i t H)`. A complex `tspan` is rejected (the time must be real).
+The circuit can be compressed with [`fuse_gates`](@ref) and applied with
+[`apply!`](@ref apply!(gs, ψ::CanonicalMPS; kwargs...)).
 """
-function trotter_propagator(ham::OpSum, tspan::Tuple{<:Number,<:Number};
-							order::Int=2, stepsize::Number=0.01)
+function trotter_propagator(ham::OpSum, tspan::Tuple{<:Real,<:Real};
+							order::Int=2, stepsize::Real=0.01)
 	p = div(order, 2)
 	(p * 2 == order) || throw(ArgumentError("only even orders are supported, got order = $order"))
 	ts = _absorb_one_bodies(ham).data

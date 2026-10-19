@@ -303,6 +303,26 @@ end
 	@test scalartype(sc) == ComplexF64
 	@test all(k -> eltype(sc.data[k].operators[1]) == ComplexF64, 1:2)
 	@test isconstant(sc.data[1]) && !isconstant(sc.data[2])
+	# call: freeze the coefficient at a real time; a complex time is rejected
+	@test t(0.7) isa OpTerm && isconstant(t(0.7))
+	@test t(0.7).coeff == t.coeff(0.7)
+	@test s(0.3) isa OpSum && isconstant(s(0.3))
+	@test s(0.3).data[1].coeff == 1.0
+	@test s(0.3).data[2].coeff(0.0) ≈ im * exp(-0.3)
+	@test_throws MethodError c1(1.0im)
+	@test_throws MethodError t(1.0im)
+	@test_throws MethodError s(1.0im)
+	# scalar multiplication scales constant and time-dependent coefficients
+	@test 2 * c1 == 5.0 && c1 * 2 == 5.0
+	@test (2im * c2)(1.0) ≈ 3im * exp(-0.7)
+	@test (c2 * 2)(1.0) ≈ 3.0 * exp(-0.7)
+	@test (2im * t).coeff(0.7) ≈ -2 * exp(-0.7)
+	@test (t * 0.5).coeff(0.7) ≈ 0.5im * exp(-0.7)
+	s2 = -2.0 * s
+	@test !isconstant(s2)
+	@test s2.data[1].coeff == -2.0
+	@test s2.data[2].coeff(0.3) ≈ -2im * exp(-0.3)
+	@test (s * 2).data[1].coeff == 2.0
 	# consumers other than trotter_propagator reject time-dependent terms
 	@test_throws ArgumentError MPOHamiltonian([2, 2], OpTerm(1.0, 1 => σx),
 											  OpTerm(t -> im * t, 2 => σx))

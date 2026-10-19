@@ -6,18 +6,19 @@
 	Coeff(f)
 
 A scalar coefficient of an [`OpTerm`](@ref): a plain number `x`, or a time-dependent
-function `f` mapping a time to a number (a bare function is wrapped as `Coeff(f)`).
-`(c::Coeff)(t)` evaluates the coefficient at time `t` (a constant ignores `t`),
-[`isconstant`](@ref) says whether it is time-independent, and `scalartype(c)` probes
-the produced number type (a function coefficient is probed at `t = 0.0`). Time-dependent
-coefficients are only supported by [`trotter_propagator`](@ref).
+function `f` mapping a real time to a number (a bare function is wrapped as `Coeff(f)`).
+`(c::Coeff)(t::Real)` evaluates the coefficient at the real time `t` (a constant
+ignores `t`), [`isconstant`](@ref) says whether it is time-independent, and
+`scalartype(c)` probes the produced number type (a function coefficient is probed at
+`t = 0.0`). Multiplying a coefficient by a number scales it pointwise.
+Time-dependent coefficients are only supported by [`trotter_propagator`](@ref).
 """
 struct Coeff{F}
 	f::F
 end
 Coeff(x::Number) = Coeff{typeof(x)}(x)
 
-(c::Coeff)(t::Number) = c.f isa Number ? c.f : c.f(t)
+(c::Coeff)(t::Real) = c.f isa Number ? c.f : c.f(t)
 isconstant(c::Coeff) = c.f isa Number
 scalartype(c::Coeff) = c.f isa Number ? typeof(c.f) : typeof(c.f(0.0))
 Base.:(==)(a::Coeff, b::Coeff) = a.f == b.f
@@ -26,6 +27,10 @@ Base.:(==)(x::Number, a::Coeff) = a == x
 Base.conj(c::Coeff) = isconstant(c) ? Coeff(conj(c.f)) : Coeff(t -> conj(c.f(t)))
 # the hermitian conjugate of a coefficient (a time-dependent one is conjugated pointwise)
 _adjoint(c::Coeff) = isconstant(c) ? Coeff(conj(c.f)) : Coeff(t -> conj(c.f(t)))
+# scalar multiplication (a time-dependent coefficient is scaled pointwise)
+Base.:*(x::Number, c::Coeff) = isconstant(c) ? Coeff(x * c.f) : Coeff(t -> x * c.f(t))
+Base.:*(c::Coeff, x::Number) = x * c
+Base.:-(c::Coeff) = -1 * c
 
 """
 	OpTerm(coeff, positions, operators)
@@ -38,7 +43,9 @@ commute on distinct sites). The coefficient may be a number, a time-dependent fu
 [`trotter_propagator`](@ref). The operators only have to be *square*: the local dimension
 may differ from site to site, and [`OpSum`](@ref) checks every operator against its own
 `ds[pos]`. Terms are combined into sums with `+`
-(`OpTerm + OpTerm -> OpSum`, `OpSum + OpTerm`, `OpTerm + OpSum`, `OpSum + OpSum`).
+(`OpTerm + OpTerm -> OpSum`, `OpSum + OpTerm`, `OpTerm + OpSum`, `OpSum + OpSum`),
+multiplied by a number (`x * term`, `term * x`) and evaluated at a real time
+(`term(t)` freezes the coefficient at `t`).
 """
 struct OpTerm{T<:Number}
 	coeff::Coeff
@@ -89,6 +96,14 @@ Base.:(==)(a::OpTerm, b::OpTerm) = a.coeff == b.coeff && a.positions == b.positi
 # their order — each local operator is adjointed in place)
 Base.adjoint(t::OpTerm) = OpTerm(_adjoint(t.coeff), t.positions, adjoint.(t.operators))
 
+# scalar multiplication scales the coefficient
+Base.:*(x::Number, t::OpTerm) = OpTerm(x * t.coeff, t.positions, t.operators)
+Base.:*(t::OpTerm, x::Number) = x * t
+Base.:-(t::OpTerm) = -1 * t
+
+# freeze the coefficient at the real time `tval`
+(t::OpTerm)(tval::Real) = OpTerm(t.coeff(tval), t.positions, t.operators)
+
 OpTerm(coeff, pairs::Pair{Int,<:AbstractMatrix}...) =
 	OpTerm(coeff, Int[first.(pairs)...], AbstractMatrix[last.(pairs)...])
 
@@ -116,7 +131,9 @@ point of an incremental build: terms are accumulated with `+=`
 (`OpSum + OpTerm -> OpSum`), every added term is validated against the lattice. Terms
 can also be summed lattice-free (`OpTerm + OpTerm -> OpSum`, `OpTerm + OpSum`,
 `OpSum + OpSum`), in which case `ds` is inferred from the operators (sites without
-operators default to the first term's dimension).
+operators default to the first term's dimension). A sum can be multiplied by a number
+(`x * sum`, `sum * x`) and evaluated at a real time (`sum(t)` freezes every
+coefficient at `t`).
 """
 struct OpSum{T<:Number}
 	data::Vector{OpTerm{T}}
@@ -147,6 +164,16 @@ phydim(x::OpSum, site) = x.ds[site]
 Base.:(==)(a::OpSum, b::OpSum) = a.ds == b.ds && a.data == b.data
 
 Base.adjoint(s::OpSum) = OpSum(s.ds, adjoint.(s.data))
+
+# scalar multiplication scales every term
+Base.:*(x::Number, s::OpSum) =
+	isempty(s.data) ? OpSum(copy(s.ds)) : OpSum(s.ds, [x * t for t in s.data])
+Base.:*(s::OpSum, x::Number) = x * s
+Base.:-(s::OpSum) = -1 * s
+
+# freeze every coefficient at the real time `tval`
+(s::OpSum)(tval::Real) =
+	isempty(s.data) ? OpSum(copy(s.ds)) : OpSum(s.ds, [t(tval) for t in s.data])
 
 _convert_term(::Type{T}, t::OpTerm{T}) where {T} = t
 _convert_term(::Type{T}, t::OpTerm) where {T} =
