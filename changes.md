@@ -1,5 +1,29 @@
 # Interface changes
 
+## Changed: `GateOp` carries `isunitary`; `fuse_gates` has no `maxsites`; `apply!` canonicalizes by unitarity
+
+- `GateOp` gains an `isunitary::Bool` field. The constructor is now
+  `GateOp(positions, op; isunitary::Union{Bool,Nothing}=nothing, atol=1.0e-10)`:
+  with `isunitary = nothing` (default) the flag is determined internally by checking
+  `U†·U ≈ I` (within `atol`) on the fused operator matrix; a `Bool` is trusted as given
+  (no check). `isunitary(g::GateOp)` now simply returns the field — it no longer takes
+  an `atol` keyword. `shift` and `adjoint` propagate the flag.
+- `apply!(g, ψ; ...)` now defaults to `canonicalize = !isunitary(g)`: unitary gates keep
+  the canonical form by the Hastings update alone (no trailing `truncate!`), while
+  non-unitary gates re-canonicalize under `trunc`. Previously the default was `false`.
+  Pass `canonicalize=true/false` to override.
+- `fuse_gates(gates)` no longer takes `maxsites`: every gate is absorbed, so the fused
+  circuit may contain gates on supports larger than any previous cap (merges are only
+  skipped between gates with disjoint — hence commuting — supports). The fused circuit
+  applies exactly the same product of operators as the input; a gate whose support
+  covers a site swallows every single-site gate of that site. Merged gates carry
+  `isunitary = isunitary(a) && isunitary(b)`.
+
+The tests cover the automatic/keyword/`atol` unitarity detection, the
+`canonicalize = !isunitary(g)` default, full absorption of all single-site gates by a
+multi-site gate covering every site, and the exact equivalence of fused and original
+circuits on a state (including a random mixed single-/two-/three-site circuit).
+
 ## Interface: `GeneralStepper`, `Models` sub-module, `TaylorCluster` tweaks
 
 - `TaylorCluster` now inherits the new abstract `GeneralStepper` (exported) instead of

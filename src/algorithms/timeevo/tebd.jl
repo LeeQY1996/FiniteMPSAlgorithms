@@ -22,64 +22,78 @@ scalartype(::Type{<:AbstractGate{N, T}}) where {N, T} = T
 Shift all support positions of gate `g` by `by` sites.
 """
 shift(g::G, by::Integer) where {G<:AbstractGate} =
-	typeof(g)(ntuple(i -> g.positions[i] + by, Val(length(g.positions))), g.op)
+	typeof(g)(ntuple(i -> g.positions[i] + by, Val(length(g.positions))), g.op,
+			 g.isunitary)
 
 function Base.adjoint(g::G) where {G<:AbstractGate}
 	N = length(g.positions)
 	# U† : swap the ket/bra index blocks and conjugate; support positions unchanged
 	perm = (ntuple(i -> N + i, Val(N))..., ntuple(i -> i, Val(N))...)
-	return typeof(g)(g.positions, permutedims(conj(g.op), perm))
+	# the adjoint of a unitary gate is exactly unitary
+	return typeof(g)(g.positions, permutedims(conj(g.op), perm), g.isunitary)
 end
 
 """
-	GateOp(positions, op)
+	GateOp(positions, op; isunitary=nothing, atol=1e-10)
 
 A quantum gate acting on the `N` distinct sites `positions`. The operator `op` is a
 rank-`2N` tensor `(i1', …, iN', i1, …, iN)` — all bra (output) indices first, all
 ket (input) indices second, each block ordered with `positions[1]` the slowest index.
 The positions only have to be distinct: unsorted inputs are sorted internally (the
 operator legs follow along). The input is copied and materialized as a dense array of
-concrete element type; it is *not* checked for unitarity (pass `exp(-im * dt * h)` for
-a unitary gate). Since a non-unitary gate does not preserve the canonical form under
-the Hastings update, [`apply!`](@ref) can re-canonicalize the state with `truncate!`
-(`canonicalize = true`).
+concrete element type.
+
+The gate carries an `isunitary::Bool` field: with the default `isunitary = nothing` it
+is determined by checking `U†·U ≈ I` (within `atol`) on the fused operator matrix; a
+`Bool` is trusted as given. Since a non-unitary gate does not preserve the canonical
+form under the Hastings update, [`apply!`](@ref) re-canonicalizes the state with
+`truncate!` iff `!isunitary(g)` (the `canonicalize` keyword default).
 """
 struct GateOp{N, T, M} <: AbstractGate{N, T}
 	positions::NTuple{N, Int}
 	op::Array{T, M}   # (i1', …, iN', i1, …, iN) with M == 2N
+	isunitary::Bool
 
-	function GateOp{N, T, M}(positions::NTuple{N, Int}, op::AbstractArray) where {N, T, M}
+	function GateOp{N, T, M}(positions::NTuple{N, Int}, op::AbstractArray,
+							 isunitary::Bool) where {N, T, M}
 		M == 2N || throw(ArgumentError("the operator tensor must have rank $(2N)"))
 		ndims(op) == M || throw(DimensionMismatch("the operator tensor must have rank $M"))
 		allunique(positions) || throw(ArgumentError("the gate positions must be distinct"))
-		return new{N, T, M}(positions, convert(Array{T, M}, op))
+		return new{N, T, M}(positions, convert(Array{T, M}, op), isunitary)
 	end
 end
 
-function GateOp(positions::NTuple{N, Int}, op::AbstractArray) where {N}
+function GateOp(positions::NTuple{N, Int}, op::AbstractArray;
+				isunitary::Union{Bool,Nothing}=nothing, atol::Real=1.0e-10) where {N}
 	M = ndims(op)
 	M == 2N || throw(ArgumentError("the operator tensor must have rank $(2N)"))
 	T = scalartype(op)
 	perm = sortperm(collect(positions))
 	if perm != collect(1:N)
 		# sort the support and follow with the operator legs: sorted site j is input
-		# site perm[j]
+		# site perm[j] (the unitarity check is invariant under the simultaneous
+		# row/column permutation)
 		op = permutedims(op, (perm..., (N .+ perm)...))
 		positions = ntuple(i -> positions[perm[i]], Val(N))
 	end
-	return GateOp{N, T, M}(positions, op)
+	u = isnothing(isunitary) ? _isunitary_op(op, atol) : isunitary
+	return GateOp{N, T, M}(positions, op, u)
+end
+
+# whether the fused (dn × dn) operator matrix satisfies U†·U ≈ I within atol
+function _isunitary_op(op::AbstractArray, atol::Real)
+	dn = isqrt(length(op))
+	m = reshape(op, dn, dn)
+	return isapprox(m' * m, isometry(scalartype(op), dn); atol)
 end
 
 """
-	isunitary(g::GateOp; atol=1e-10) -> Bool
+	isunitary(g::GateOp) -> Bool
 
-Whether the gate operator of `g` is unitary: the fused `(d^N × d^N)` operator matrix
-satisfies `U†·U ≈ I` within `atol`.
+Whether the gate operator of `g` is unitary — the `isunitary` field, determined at
+construction (checked within `atol`, or trusted from the keyword).
 """
-function isunitary(g::GateOp{N}; atol::Real=1.0e-10) where {N}
-	m = tie(g.op, (N, N))
-	return isapprox(m' * m, isometry(scalartype(g), size(m, 2)); atol)
-end
+isunitary(g::GateOp) = g.isunitary
 
 # ── N-site gate application (Hastings update, aligned with TEMPO/GTEMPO; the
 #    multi-site block sweep follows MPSSimulator) ─────────────────────────────────
@@ -140,7 +154,7 @@ end
 
 """
 	apply!(g::AbstractGate, ψ::CanonicalMPS; trunc=Defaults.alg_trunc(),
-	       canonicalize=false) -> ψ
+	       canonicalize=!isunitary(g)) -> ψ
 
 Apply the gate `g` (acting on `N ≥ 1` distinct sites) to `ψ` in place, with the
 Hastings update (aligned with TEMPO/GTEMPO; the multi-site block sweep after
@@ -181,11 +195,12 @@ TEMPO/GTEMPO); its advantage is that both sides of every bond are updated from a
 **Caveat:** the exact preservation of the strict canonical form relies on the
 truncated SVD being exact for the state at hand — for aggressive truncations the
 *gauge* property degrades and the canonical form is only approximate. A non-unitary
-gate breaks the *gauge* property outright; pass `canonicalize = true` to
-re-canonicalize the final state with [`truncate!`](@ref) (an SVD sweep under `trunc`).
+gate breaks the *gauge* property outright, so `canonicalize` defaults to
+`!isunitary(g)`: the state is re-canonicalized with [`truncate!`](@ref) (an SVD sweep
+under `trunc`) after every non-unitary gate.
 """
 function apply!(g::AbstractGate{N}, ψ::CanonicalMPS; trunc::TruncationScheme=Defaults.alg_trunc(),
-				canonicalize::Bool=false) where {N}
+				canonicalize::Bool=!isunitary(g)) where {N}
 	L = length(ψ)
 	N <= L || throw(BoundsError())
 	all(p -> 1 <= p <= L, positions(g)) || throw(BoundsError())
@@ -295,7 +310,7 @@ end
 # ── gate fusion (aligned with QuantumSpins.fuse_gates) ──────────────────────────
 # two gates can merge into one iff their supports intersect (gates with disjoint
 # supports commute); the merged support is the union, with identities embedded on the
-# complementary sites. Merges that would exceed `maxsites` sites are skipped.
+# complementary sites. Every gate is absorbed: no merge is skipped.
 
 "gates with disjoint supports commute."
 _gates_commute(a::NTuple{N, Int}, b::NTuple{M, Int}) where {N, M} = !any(in(b), a)
@@ -313,8 +328,8 @@ function _gate_embed(g::AbstractGate{N, T}, pos::Vector{Int}, other::AbstractGat
 	dms = [size(other.op, findfirst(==(p), po)) for p in ms]
 	n = length(pos)
 	# step 1: identity padding on the complementary sites; legs (ka…, ms…, ka…, ms…)
-	# (kron puts the LEFT factor's row index in the high digits, i.e. the first legs)
-	δ = reshape(Matrix{T}(I, prod(dms), prod(dms)), dms..., dms...)
+	# (kron puts the LEFT factor's row index in the high digits, i.e. the last legs)
+	δ = Matrix{T}(I, prod(dms), prod(dms))
 	E = kron(δ, reshape(g.op, D, D))
 	# step 2: reorder the legs from (ka…, ms…) to the ascending `pos`
 	perm = ntuple(Val(2n)) do l
@@ -329,12 +344,11 @@ function _gate_embed(g::AbstractGate{N, T}, pos::Vector{Int}, other::AbstractGat
 end
 
 "merge the two gates as `a ∘ b` (`b` applied first) on the union support; returns
-`nothing` when the supports are disjoint or the union exceeds `maxsites` sites."
-function _try_gate_mul(a::AbstractGate, b::AbstractGate, maxsites::Int)
+`nothing` when the supports are disjoint."
+function _try_gate_mul(a::AbstractGate, b::AbstractGate)
 	na, nb = length(positions(a)), length(positions(b))
 	pos = sort(union(positions(a), positions(b)))
 	length(pos) == na + nb && return nothing      # disjoint supports (commuting gates)
-	length(pos) <= max(maxsites, max(na, nb)) || return nothing
 	T = promote_type(scalartype(a), scalartype(b))
 	# `a` acts after `b`
 	r = convert(Matrix{T}, _gate_embed(a, pos, b)) * convert(Matrix{T}, _gate_embed(b, pos, a))
@@ -342,18 +356,20 @@ function _try_gate_mul(a::AbstractGate, b::AbstractGate, maxsites::Int)
 		i = findfirst(==(p), collect(positions(a)))
 		isnothing(i) ? size(b.op, findfirst(==(p), collect(positions(b)))) : size(a.op, i)
 	end
-	return GateOp(Tuple(pos), reshape(r, dims..., dims...))
+	# identity embeddings and operator products preserve unitarity
+	return GateOp(Tuple(pos), reshape(r, dims..., dims...);
+				  isunitary=a.isunitary && b.isunitary)
 end
 
 "one fusion pass: every gate is absorbed backwards into the closest earlier gate with
 an intersecting support (the scan stops at gates it does not commute past)."
-function _fuse_gates_pass(gs::Vector{<:AbstractGate}, maxsites::Int)
+function _fuse_gates_pass(gs::Vector{<:AbstractGate})
 	b = AbstractGate[gs...]   # heterogeneous storage: merged supports can grow
 	for i in lastindex(b):-1:2
 		item = b[i]
 		br = b[1:i-1]
 		for j in lastindex(br):-1:1
-			r = _try_gate_mul(item, br[j], maxsites)
+			r = _try_gate_mul(item, br[j])
 			if r !== nothing
 				br[j] = r
 				b = [br; b[i+1:end]]
@@ -369,18 +385,19 @@ end
 _fuse_adjoints(gs::AbstractVector{<:AbstractGate}) = [adjoint(g) for g in reverse(gs)]
 
 """
-	fuse_gates(gates::AbstractVector{<:AbstractGate}; maxsites=4) -> Vector{GateOp}
+	fuse_gates(gates::AbstractVector{<:AbstractGate}) -> Vector{GateOp}
 
 Fuse a gate sequence (circuit) into as few gates as possible (aligned with
 QuantumSpins): every gate is absorbed backwards into the closest earlier gate with an
 intersecting support — two gates commute exactly when their supports are disjoint —
 and a second pass on the adjointed circuit (a forward pass) merges the boundary gates
-of repeated layers. Gates whose union support would exceed `maxsites` sites are left
-unfused. The fused circuit applies the same product of operators as the input.
+of repeated layers. Single-site gates are absorbed into any intersecting multi-site
+gate, so a gate whose support covers a site swallows that site's single-site gates. No
+gate is left out: every intersecting pair is mergeable, and the fused circuit applies
+the same product of operators as the input.
 """
-function fuse_gates(gates::AbstractVector{<:AbstractGate}; maxsites::Int=4)
-	return _fuse_adjoints(_fuse_gates_pass(_fuse_adjoints(collect(gates)), maxsites))
-end
+fuse_gates(gates::AbstractVector{<:AbstractGate}) =
+	_fuse_adjoints(_fuse_gates_pass(_fuse_adjoints(collect(gates))))
 
 # ── Trotter propagator (aligned with QuantumSpins.trotter_propagator; algorithm
 #    reference: "Higher order decompositions of ordered operator exponentials") ───

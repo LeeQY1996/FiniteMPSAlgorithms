@@ -40,10 +40,12 @@ end
 
 @testset "tebd" begin
 	Random.seed!(55)
-	# GateOp stores the op verbatim (no unitarity check); duplicate positions rejected
+	# GateOp stores the op verbatim and determines `isunitary` by default;
+	# duplicate positions rejected
 	h = randn(4, 4) + im * randn(4, 4)
 	gg0 = GateOp((1, 2), gate_tensor(h))             # non-unitary input accepted
 	@test gg0 isa AbstractGate
+	@test !isunitary(gg0)
 	@test_throws ArgumentError GateOp((2, 2), gate_tensor(h))
 	# unsorted positions are sorted internally and the operator legs follow along
 	gg1 = GateOp((2, 1), gate_tensor(h))
@@ -56,12 +58,21 @@ end
 	# adjoint swaps the ket/bra index blocks and conjugates
 	gt = adjoint(g)
 	@test gt.op ≈ permutedims(conj(g.op), (3, 4, 1, 2))
-	# isunitary predicate on the gate operator
+	# isunitary predicate: checked automatically for the fused operator matrix …
 	@test isunitary(g)
 	@test !isunitary(GateOp((1, 2), gate_tensor(h)))
 	r1 = randn(2, 2) + im * randn(2, 2)
 	@test isunitary(GateOp((3,), exp(Matrix(-im * (r1 + r1')))))
 	@test !isunitary(GateOp((3,), randn(ComplexF64, 2, 2)))
+	# … trusted verbatim when the keyword is given …
+	@test isunitary(GateOp((1, 2), gate_tensor(h); isunitary=true))
+	@test !isunitary(GateOp((1, 2), gate_tensor(U); isunitary=false))
+	@test isunitary(shift(GateOp((1, 2), gate_tensor(U)), 2))
+	@test !isunitary(shift(GateOp((1, 2), gate_tensor(h)), 2))
+	# … and controlled by `atol`
+	I2 = Matrix{ComplexF64}(I, 2, 2)
+	@test !isunitary(GateOp((1,), (1 + 1e-6) * I2; atol=1e-10))
+	@test isunitary(GateOp((1,), (1 + 1e-6) * I2; atol=1e-4))
 
 	# GateOp stores the given op verbatim (caller builds exp);
 	# gate_tensor converts the Kronecker-convention matrix to the documented tensor
@@ -157,21 +168,21 @@ end
 	# adjoint swaps the ket/bra index blocks and conjugates
 	@test adjoint(gg).op ≈ permutedims(conj(gg.op), (3, 4, 1, 2))
 
-	# apply! with canonicalize=false (the default): the physical state matches the
-	# dense application; the canonical form is not guaranteed after a non-unitary gate
+	# apply! with canonicalize=false: the physical state matches the dense
+	# application; the canonical form is not restored after a non-unitary gate
 	ψ = randommps(ComplexF64, fill(2, L); D=8)
 	canonicalize!(ψ)
 	ψref = todense(ψ)
-	apply!(gg, ψ; trunc=NoTruncation())
+	apply!(gg, ψ; trunc=NoTruncation(), canonicalize=false)
 	K = two_site_dense(gg.op, 1, L)
 	@test todense(ψ) ≈ K * ψref atol = 1e-10
 	@test norm(ψ) ≈ norm(K * ψref) atol = 1e-10
 
-	# with canonicalize=true the state is re-canonicalized after the update
+	# the default canonicalize = !isunitary(g) re-canonicalizes after this gate
 	ψc = randommps(ComplexF64, fill(2, L); D=8)
 	canonicalize!(ψc)
 	ψcref = todense(ψc)
-	apply!(gg, ψc; trunc=NoTruncation(), canonicalize=true)
+	apply!(gg, ψc; trunc=NoTruncation())
 	@test todense(ψc) ≈ K * ψcref atol = 1e-10
 	@test iscanonical(ψc; atol=1e-8)
 
@@ -181,6 +192,7 @@ end
 	ψuref = todense(ψu)
 	hh = h + h'
 	gu = GateOp((3, 4), gate_tensor(exp(Matrix(-im * hh))))
+	@test isunitary(gu)
 	Vd = two_site_dense(gu.op, 3, L)
 	apply!(gu, ψu; trunc=NoTruncation())
 	@test todense(ψu) ≈ Vd * ψuref atol = 1e-10
@@ -266,15 +278,17 @@ end
 	apply!(g4s, ψ4s; trunc=NoTruncation())
 	@test todense(ψ4s) ≈ todense(ψ4) atol = 1e-10
 
-	# non-unitary 3-site gate: exact state, canonicity restored via canonicalize
+	# non-unitary 3-site gate: exact state, canonicity restored by the default
+	# canonicalize = !isunitary(g)
 	gn = GateOp((2, 4, 5), gate_tensorN(randn(ComplexF64, 8, 8), 3))
+	@test !isunitary(gn)
 	ψn = copy(ψ)
-	apply!(gn, ψn; trunc=NoTruncation())                 # canonicalize=false by default
+	apply!(gn, ψn; trunc=NoTruncation())
 	@test todense(ψn) ≈ gate_dense(gn.op, (2, 4, 5)) * v0 atol = 1e-9
+	@test iscanonical(ψn; atol=1e-8)
 	ψc = copy(ψ)
-	apply!(gn, ψc; trunc=NoTruncation(), canonicalize=true)
+	apply!(gn, ψc; trunc=NoTruncation(), canonicalize=false)
 	@test todense(ψc) ≈ todense(ψn) atol = 1e-9
-	@test iscanonical(ψc; atol=1e-8)
 
 	# nonuniform physical dims: full-support 3-site gate on (1, 2, 3), ds = (2, 3, 4)
 	dsn = [2, 3, 4]
@@ -337,10 +351,47 @@ end
 	apply!(circ, ψb; trunc=NoTruncation())
 	@test todense(ψa) ≈ todense(ψb) atol = 1e-10
 
-	# maxsites: merges producing supports larger than `maxsites` are skipped
-	f2 = fuse_gates(vcat(half, half); maxsites=2)
-	@test length(f2) == 4
-	@test positions.(f2) == [(1, 2), (2, 3), (1, 2), (2, 3)]
+	# single-site gates are all absorbed once a multi-site gate covers every site
+	single_gate(i) = GateOp((i,), exp(Matrix(-im * 0.1 * (a = randn(ComplexF64, 2, 2); a + a'))))
+	singles = [single_gate(i) for i in 1:L]
+	Hfull = randn(ComplexF64, 2^L, 2^L)
+	Hfull += Hfull'
+	gfull = GateOp(ntuple(identity, L), gate_tensorN(exp(Matrix(-im * 0.05 * Hfull)), L))
+	@test isunitary(gfull)
+	# the full-support gate sits in the middle of the single-site gates
+	circ_all = vcat(singles[1:3], [gfull], singles[4:6])
+	fa = fuse_gates(circ_all)
+	@test length(fa) == 1
+	@test positions(fa[1]) == ntuple(identity, L)
+	@test isunitary(fa[1])
+	ψa1 = copy(ψ)
+	ψa2 = copy(ψ)
+	apply!(fa, ψa1; trunc=NoTruncation())
+	apply!(circ_all, ψa2; trunc=NoTruncation())
+	@test todense(ψa1) ≈ todense(ψa2) atol = 1e-9
+	@test iscanonical(ψa1; atol=1e-8)
+
+	# a random mixed circuit (single-, two- and three-site gates, adjacent and not):
+	# the fused circuit is exactly equivalent on a state and loses no gate
+	rand_gate(pos::Tuple) = begin
+		n = length(pos)
+		a = randn(ComplexF64, 2^n, 2^n)
+		GateOp(pos, gate_tensorN(exp(Matrix(-im * 0.1 / n * (a + a'))), n))
+	end
+	circ = AbstractGate[]
+	for n in (1, 2, 3, 2, 1, 3, 2, 1, 2, 3)
+		push!(circ, rand_gate(Tuple(sort!(randperm(L)[1:n]))))
+	end
+	@test all(isunitary, circ)
+	fcirc = fuse_gates(circ)
+	@test length(fcirc) <= length(circ)
+	@test all(isunitary, fcirc)
+	ψc1 = copy(ψ)
+	ψc2 = copy(ψ)
+	apply!(fcirc, ψc1; trunc=NoTruncation())
+	apply!(circ, ψc2; trunc=NoTruncation())
+	@test todense(ψc1) ≈ todense(ψc2) atol = 1e-9
+	@test norm(ψc1) ≈ norm(ψc2) atol = 1e-10
 end
 
 @testset "TEBD vs exact diagonalization" begin
