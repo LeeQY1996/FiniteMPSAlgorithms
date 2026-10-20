@@ -118,7 +118,6 @@ complex_stepper
 
 ```@docs
 Gate
-isunitary
 swap!
 positions
 operator

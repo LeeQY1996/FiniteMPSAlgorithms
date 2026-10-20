@@ -53,10 +53,11 @@ directly. A plain integer gives the same local dimension on every support site. 
 matrix must be `D × D` with `D = prod(dims)`.
 
 The gate carries an `isunitary::Bool` field: with the default `isunitary = nothing` it
-is determined by checking `U†·U ≈ I` (within `atol`) on the fused operator matrix; a
-`Bool` is trusted as given. Since a non-unitary gate does not preserve the canonical
-form under the Hastings update, [`apply!`](@ref) re-canonicalizes the state with
-`truncate!` iff `!isunitary(g)` (the `canonicalize` keyword default).
+is determined by checking `U†·U ≈ I` with `MatrixAlgebraKit.isunitary` (within `atol`)
+on the fused operator matrix; a `Bool` is trusted as given. Since a non-unitary gate
+does not preserve the canonical form under the Hastings update, [`apply!`](@ref)
+re-canonicalizes the state with `truncate!` iff `!g.isunitary` (the `canonicalize`
+keyword default).
 """
 struct Gate{N, T, M} <: AbstractGate{N, T}
 	positions::NTuple{N, Int}
@@ -85,7 +86,10 @@ function Gate(positions::NTuple{N, Int}, op::AbstractArray;
 		op = permutedims(op, (perm..., (N .+ perm)...))
 		positions = ntuple(i -> positions[perm[i]], Val(N))
 	end
-	u = isnothing(isunitary) ? _isunitary_op(op, atol) : isunitary
+	# qualified call: the `isunitary` keyword shadows the imported function name here
+	u = isnothing(isunitary) ?
+		MatrixAlgebraKit.isunitary(reshape(op, isqrt(length(op)), isqrt(length(op))); atol) :
+		isunitary
 	return Gate{N, T, M}(positions, op, u)
 end
 
@@ -111,21 +115,6 @@ function Gate(positions::NTuple{N, Int}, op::AbstractMatrix, phydims;
 	tensor = permutedims(reshape(op, dims..., dims...), perm)
 	return Gate(positions, tensor; isunitary, atol)
 end
-
-# whether the fused (dn × dn) operator matrix satisfies U†·U ≈ I within atol
-function _isunitary_op(op::AbstractArray, atol::Real)
-	dn = isqrt(length(op))
-	m = reshape(op, dn, dn)
-	return isapprox(m' * m, isometry(scalartype(op), dn); atol)
-end
-
-"""
-	isunitary(g::Gate) -> Bool
-
-Whether the gate operator of `g` is unitary — the `isunitary` field, determined at
-construction (checked within `atol`, or trusted from the keyword).
-"""
-isunitary(g::Gate) = g.isunitary
 
 # ── N-site gate application (Hastings update, aligned with TEMPO/GTEMPO; the
 #    multi-site block sweep follows MPSSimulator) ─────────────────────────────────
@@ -186,7 +175,7 @@ end
 
 """
 	apply!(g::AbstractGate, ψ::CanonicalMPS; trunc=Defaults.alg_trunc(),
-	       canonicalize=!isunitary(g)) -> ψ
+	       canonicalize=!g.isunitary) -> ψ
 
 Apply the gate `g` (acting on `N ≥ 1` distinct sites) to `ψ` in place, with the
 Hastings update (aligned with TEMPO/GTEMPO; the multi-site block sweep after
@@ -228,11 +217,11 @@ TEMPO/GTEMPO); its advantage is that both sides of every bond are updated from a
 truncated SVD being exact for the state at hand — for aggressive truncations the
 *gauge* property degrades and the canonical form is only approximate. A non-unitary
 gate breaks the *gauge* property outright, so `canonicalize` defaults to
-`!isunitary(g)`: the state is re-canonicalized with [`truncate!`](@ref) (an SVD sweep
+`!g.isunitary`: the state is re-canonicalized with [`truncate!`](@ref) (an SVD sweep
 under `trunc`) after every non-unitary gate.
 """
 function apply!(g::AbstractGate{N}, ψ::CanonicalMPS; trunc::TruncationScheme=Defaults.alg_trunc(),
-				canonicalize::Bool=!isunitary(g)) where {N}
+				canonicalize::Bool=!g.isunitary) where {N}
 	L = length(ψ)
 	N <= L || throw(BoundsError())
 	all(p -> 1 <= p <= L, positions(g)) || throw(BoundsError())

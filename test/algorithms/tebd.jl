@@ -45,7 +45,7 @@ end
 	h = randn(4, 4) + im * randn(4, 4)
 	gg0 = Gate((1, 2), gate_tensor(h))             # non-unitary input accepted
 	@test gg0 isa AbstractGate
-	@test !isunitary(gg0)
+	@test !gg0.isunitary
 	@test_throws ArgumentError Gate((2, 2), gate_tensor(h))
 	# unsorted positions are sorted internally and the operator legs follow along
 	gg1 = Gate((2, 1), gate_tensor(h))
@@ -58,21 +58,21 @@ end
 	# adjoint swaps the ket/bra index blocks and conjugates
 	gt = adjoint(g)
 	@test gt.op ≈ permutedims(conj(g.op), (3, 4, 1, 2))
-	# isunitary predicate: checked automatically for the fused operator matrix …
-	@test isunitary(g)
-	@test !isunitary(Gate((1, 2), gate_tensor(h)))
+	# isunitary field: checked automatically for the fused operator matrix …
+	@test g.isunitary
+	@test !Gate((1, 2), gate_tensor(h)).isunitary
 	r1 = randn(2, 2) + im * randn(2, 2)
-	@test isunitary(Gate((3,), exp(Matrix(-im * (r1 + r1')))))
-	@test !isunitary(Gate((3,), randn(ComplexF64, 2, 2)))
+	@test Gate((3,), exp(Matrix(-im * (r1 + r1')))).isunitary
+	@test !Gate((3,), randn(ComplexF64, 2, 2)).isunitary
 	# … trusted verbatim when the keyword is given …
-	@test isunitary(Gate((1, 2), gate_tensor(h); isunitary=true))
-	@test !isunitary(Gate((1, 2), gate_tensor(U); isunitary=false))
-	@test isunitary(shift(Gate((1, 2), gate_tensor(U)), 2))
-	@test !isunitary(shift(Gate((1, 2), gate_tensor(h)), 2))
+	@test Gate((1, 2), gate_tensor(h); isunitary=true).isunitary
+	@test !Gate((1, 2), gate_tensor(U); isunitary=false).isunitary
+	@test shift(Gate((1, 2), gate_tensor(U)), 2).isunitary
+	@test !shift(Gate((1, 2), gate_tensor(h)), 2).isunitary
 	# … and controlled by `atol`
 	I2 = Matrix{ComplexF64}(I, 2, 2)
-	@test !isunitary(Gate((1,), (1 + 1e-6) * I2; atol=1e-10))
-	@test isunitary(Gate((1,), (1 + 1e-6) * I2; atol=1e-4))
+	@test !Gate((1,), (1 + 1e-6) * I2; atol=1e-10).isunitary
+	@test Gate((1,), (1 + 1e-6) * I2; atol=1e-4).isunitary
 
 	# Gate stores the given op verbatim (caller builds exp);
 	# gate_tensor converts the Kronecker-convention matrix to the documented tensor
@@ -85,7 +85,7 @@ end
 	@test gm.op ≈ gg.op atol = 1e-12
 	@test Gate((2, 3), M, [2, 2, 2, 2]).op ≈ gg.op atol = 1e-12
 	@test Gate((2, 3), M, 2).op ≈ gg.op atol = 1e-12
-	@test isunitary(Gate((1,), exp(Matrix(-im * (r1 + r1'))), [2]))
+	@test Gate((1,), exp(Matrix(-im * (r1 + r1'))), [2]).isunitary
 	# non-uniform local dimensions: a 3-site gate with dims (2, 3, 2)
 	dims3 = (2, 3, 2)
 	M3 = randn(ComplexF64, prod(dims3), prod(dims3))
@@ -193,7 +193,7 @@ end
 	@test todense(ψ) ≈ K * ψref atol = 1e-10
 	@test norm(ψ) ≈ norm(K * ψref) atol = 1e-10
 
-	# the default canonicalize = !isunitary(g) re-canonicalizes after this gate
+	# the default canonicalize = !g.isunitary re-canonicalizes after this gate
 	ψc = randommps(ComplexF64, fill(2, L); D=8)
 	canonicalize!(ψc)
 	ψcref = todense(ψc)
@@ -207,7 +207,7 @@ end
 	ψuref = todense(ψu)
 	hh = h + h'
 	gu = Gate((3, 4), gate_tensor(exp(Matrix(-im * hh))))
-	@test isunitary(gu)
+	@test gu.isunitary
 	Vd = two_site_dense(gu.op, 3, L)
 	apply!(gu, ψu; trunc=NoTruncation())
 	@test todense(ψu) ≈ Vd * ψuref atol = 1e-10
@@ -275,7 +275,7 @@ end
 	@test norm(ψ3) ≈ 1 atol = 1e-10
 
 	# single-site gates (N = 1): same local update; a non-unitary gate triggers the
-	# default canonicalize = !isunitary(g)
+	# default canonicalize = !g.isunitary
 	us = randn(ComplexF64, 2, 2)
 	us += us'
 	g1 = Gate((2,), exp(Matrix(-im * us)))
@@ -313,9 +313,9 @@ end
 	@test todense(ψ4s) ≈ todense(ψ4) atol = 1e-10
 
 	# non-unitary 3-site gate: exact state, canonicity restored by the default
-	# canonicalize = !isunitary(g)
+	# canonicalize = !g.isunitary
 	gn = Gate((2, 4, 5), gate_tensorN(randn(ComplexF64, 8, 8), 3))
-	@test !isunitary(gn)
+	@test !gn.isunitary
 	ψn = copy(ψ)
 	apply!(gn, ψn; trunc=NoTruncation())
 	@test todense(ψn) ≈ gate_dense(gn.op, (2, 4, 5)) * v0 atol = 1e-9
@@ -391,13 +391,13 @@ end
 	Hfull = randn(ComplexF64, 2^L, 2^L)
 	Hfull += Hfull'
 	gfull = Gate(ntuple(identity, L), gate_tensorN(exp(Matrix(-im * 0.05 * Hfull)), L))
-	@test isunitary(gfull)
+	@test gfull.isunitary
 	# the full-support gate sits in the middle of the single-site gates
 	circ_all = vcat(singles[1:3], [gfull], singles[4:6])
 	fa = fuse_gates(circ_all)
 	@test length(fa) == 1
 	@test positions(fa[1]) == ntuple(identity, L)
-	@test isunitary(fa[1])
+	@test fa[1].isunitary
 	ψa1 = copy(ψ)
 	ψa2 = copy(ψ)
 	apply!(fa, ψa1; trunc=NoTruncation())
@@ -416,10 +416,10 @@ end
 	for n in (1, 2, 3, 2, 1, 3, 2, 1, 2, 3)
 		push!(circ, rand_gate(Tuple(sort!(randperm(L)[1:n]))))
 	end
-	@test all(isunitary, circ)
+	@test all(g -> g.isunitary, circ)
 	fcirc = fuse_gates(circ)
 	@test length(fcirc) <= length(circ)
-	@test all(isunitary, fcirc)
+	@test all(g -> g.isunitary, fcirc)
 	ψc1 = copy(ψ)
 	ψc2 = copy(ψ)
 	apply!(fcirc, ψc1; trunc=NoTruncation())
