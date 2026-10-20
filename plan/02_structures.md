@@ -68,7 +68,7 @@ CanonicalMPO(::Type{T}, ds::AbstractVector{Int})    # identity: reshape(isometry
 CanonicalMPO(::Type{T}, L::Int; d::Int=2)
 ```
 
-## 2.4 operators/ — MPO（`src/operators/mpo.jl`，对应 QuantumSpins MPO）
+## 2.4 operators/ — MPO（`src/operators/mpo.jl`）
 
 ```julia
 struct MPO{T<:Number} <: AbstractMPO{T}
@@ -124,7 +124,7 @@ canonicalize(ψ; kwargs...)
 #   左正交分组 (1,2)|(3,4); 右正交分组 (1)|(2,3,4) → permute(q,(1,2,4,3)) 恢复轴序
 leftorth! / rightorth! / canonicalize! / canonicalize(ψ::CanonicalMPO; ...)
 
-# MPO / MPOHamiltonian —— 同 CanonicalMPO 的分组方式(修复 QuantumSpins mpo/orth.jl 的 bug)
+# MPO / MPOHamiltonian —— 同 CanonicalMPO 的分组方式
 leftorth! / rightorth! / canonicalize!(h::MPO; ...)
 
 # 正交性检验(张量级 + 链级)

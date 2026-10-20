@@ -23,7 +23,6 @@ stable_* 变体、extensions.jl（texp/零空间基等）。
 | 底层张量操作（截断/QR/LQ/SVD/张量分解） | [TEMPO/src/tensorops](file:///home/guochu/Documents/Missile/TEMPO/src/tensorops)（vendor 直接拷贝） |
 | `CanonicalMPS` / `CanonicalMPO` 数据布局 | TEMPO 的 `ADT` / `ProcessTensor`（字段 `data`、`s`、`scaling` 完全一致） |
 | `SVDCompression` / `DMRG1` / `Orthogonalize` 算法定义 | TEMPO `src/algorithms.jl`（原样语义：`TruncationWithD`、`initguess`、`callback` 等） |
-| `MPO` / `MPOHamiltonian`、门演化、ALS 环境 | [QuantumSpins](file:///home/guochu/Documents/Meteor/QuantumSpins)（`MPO`、`apply_gates`、`iterativeariths`） |
 | 算法清单与组织方式 | MPSKit（DMRG1、TDVP、multiplicators 变分压缩、激发态、MPOHamiltonian） |
 
 注意：MPSKit 的 `plansor`/flip/对称张量设施在本包中**不实现**——所有张量都是普通稠密 `Array`，指标排列用 `permutedims` 即可。
@@ -48,7 +47,7 @@ stable_* 变体、extensions.jl（texp/零空间基等）。
    - **精确（严格）算法**（无截断的 `*`、`+`）→ `states/linalg.jl` 与 `operators/linalg.jl`；
    - **截断算法**（`mult`/`add`/`compress`，唯一导出接口）→ `algorithms/`，分派 `SVDCompression` | `DMRG1`；
    - DMRG1 / 激发态 / TDVP → `algorithms/`，统一 `leftsweep!` / `rightsweep!` / `sweep!` 接口。
-7. **规范中心用扫描式处理**（QuantumSpins 风格）：不维护显式 center 对象，环境缓存记录中心位点，扫过即 QR/LQ 移中心。
+7. **规范中心用扫描式处理**：不维护显式 center 对象，环境缓存记录中心位点，扫过即 QR/LQ 移中心。
 8. **数值稳健**：SVD 用 `SDD()`（MatrixAlgebraKit `SafeDivideAndConquer`，失败自动回退）；缩放因子防溢出；
    截断至少保留 1 个奇异值（`add_back`）。
 
@@ -154,11 +153,9 @@ src/
 
 ## 已知移植陷阱（来自参考代码审查）
 
-1. QuantumSpins `mpo/orth.jl` 存在未定义变量 `h`（应为 `psi`）的 bug——移植 MPO 规范形时需重写并测试。
-2. QuantumSpins `_check_mps_space` 只检查左边界；本包两种边界都强制检查（与 TEMPO 一致）。
-3. TEMPO 的 `scaling` 是**逐位点**语义（`dot` 中为 `scaling^L`），务必保持一致，不要与 DMRG 常见的全局缩放混淆。
-4. 本包只实现 single-site 算法（TEMPO/QuantumSpins 的 DMRG 亦为 1-site，可直接参考；不做 2-site）。
-5. MPO 张量的 SVD 分组必须把物理双指标 `(p_out, p_in)` 合在一起处理，之后 `permute(q, (1,2,4,3))` 恢复轴序。
+1. TEMPO 的 `scaling` 是**逐位点**语义（`dot` 中为 `scaling^L`），务必保持一致，不要与 DMRG 常见的全局缩放混淆。
+2. 本包只实现 single-site 算法（TEMPO 的 DMRG 亦为 1-site，可直接参考；不做 2-site）。
+3. MPO 张量的 SVD 分组必须把物理双指标 `(p_out, p_in)` 合在一起处理，之后 `permute(q, (1,2,4,3))` 恢复轴序。
 
 ## 详细计划索引
 
