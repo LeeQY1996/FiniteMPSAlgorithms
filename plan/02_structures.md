@@ -5,8 +5,9 @@
 ## 2.1 公共抽象定义（`src/abstractdefs.jl`）
 
 ```julia
-const MPSTensor{T}  = Array{T,3}      # A[aL, p, aR]
-const MPOTensor{T}  = Array{T,4}      # W[aL, p_out, aR, p_in]
+const MPSTensor{T}  = AbstractArray{T,3}      # A[aL, p, aR]
+const MPOTensor{T}  = AbstractArray{T,4}      # W[aL, p_out, aR, p_in]
+# (接口接受任意 AbstractArray 张量如 view；链内部存储仍为稠密 Array，构造时转换)
 # (无 ValidIndices; indexing 直接用 Integer/AbstractRange/Colon 的多重派发)
 
 abstract type AbstractMPS{T<:Number} end     # 量子态链

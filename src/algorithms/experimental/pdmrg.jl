@@ -61,10 +61,10 @@ The mutable state (the center position and its tensor) lives in `Ref` fields, so
 ansatz itself is immutable: sweeps update `rho.center[]` / `rho.mcenter[]` in place.
 """
 struct PositiveMPA{T<:Number}
-	data::Vector{MPSTensor{T}}
+	data::Vector{Array{T,3}}
 	mcenter::Base.RefValue{Array{T,4}}
 	center::Base.RefValue{Int}
-	PositiveMPA(data::Vector{MPSTensor{T}}, mcenter::Array{T,4}, center::Integer) where {T<:Number} =
+	PositiveMPA(data::Vector{Array{T,3}}, mcenter::Array{T,4}, center::Integer) where {T<:Number} =
 		new{T}(data, Ref(mcenter), Ref(center))
 end
 

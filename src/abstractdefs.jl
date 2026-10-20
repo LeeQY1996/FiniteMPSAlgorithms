@@ -1,7 +1,7 @@
 # common abstract types, aliases and interface for one-dimensional tensor networks
 
-const MPSTensor{T}  = Array{T,3}     # A[aL, p, aR]
-const MPOTensor{T}  = Array{T,4}     # W[aL, p_out, aR, p_in]
+const MPSTensor{T}  = AbstractArray{T,3}     # A[aL, p, aR]
+const MPOTensor{T}  = AbstractArray{T,4}     # W[aL, p_out, aR, p_in]
 
 abstract type AbstractMPS{T<:Number} end
 abstract type AbstractMPO{T<:Number} end
