@@ -59,7 +59,7 @@ export mult, add, compress, compress!,
 	# experimental
         PDMRG, CADMRG, PositiveMPA, ThermalDMRGCache,
         randompmpa, thermalstate, thermalstate!, freeenergy, tr,
-        CAMPS, CliffordGate, PauliTerm,
+        CAMPS,
         ALSRecon, ALSRecon2, ALSReconCache, reconstruct, reconstruct!
 # gates
 export AbstractGate, Gate, apply!, swap!, positions, shift, fuse_gates, trotter_propagator
