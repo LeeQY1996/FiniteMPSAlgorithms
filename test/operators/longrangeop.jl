@@ -121,15 +121,10 @@ end
 end
 
 # dense reference of the pair-coupled operator
-#   O = Σ_{i<j} C[i,j] · a_i m_(i+1) ⋯ m_(j-1) b_j + Σ_i C[i,i] · (a b)_i
+#   O = Σ_{i<j} C[i,j] · a_i m_(i+1) ⋯ m_(j-1) b_j
 function pairterm_dense(a, m, b, C, L)
 	d = size(a, 1)
 	O = zeros(ComplexF64, d^L, d^L)
-	for i in 1:L
-		iszero(C[i, i]) && continue
-		factors = [ifelse(t == i, a * b, I(d)) for t in 1:L]
-		O .+= C[i, i] .* reshape(kron(factors...), d^L, d^L)
-	end
 	for i in 1:L-1, j in i+1:L
 		iszero(C[i, j]) && continue
 		factors = [ifelse(t == i, a, ifelse(t == j, b, ifelse(i < t < j, m, I(d))))
@@ -146,10 +141,10 @@ end
 	a = randn(ComplexF64, d, d)
 	m = randn(ComplexF64, d, d)
 	b = randn(ComplexF64, d, d)
-	C = triu(randn(ComplexF64, L, L))
+	C = triu(randn(ComplexF64, L, L), 1)
 
 	# the finite-state-machine Schur representation matches the dense reference
-	# (identity propagator, off-diagonal couplings + diagonal on-site products)
+	# (identity propagator)
 	t = PairOpTerm(a, b, C)
 	@test length(t) == L && scalartype(t) == ComplexF64 && phydim(t) == d && t.m == I(d)
 	Ws = SchurMPOTensor(t, 3)
@@ -165,12 +160,12 @@ end
 	@test maximum(abs.(todense(MPO(tompotensors(Hm))) - pairterm_dense(a, m, b, C, L))) < 1e-12
 
 	# sparse couplings: dead channels (no coupling left of them) stay closed
-	Cs = triu(randn(ComplexF64, L, L))
+	Cs = triu(randn(ComplexF64, L, L), 1)
 	Cs[1, :] .= 0; Cs[3, 5] = 0
 	Hs = MPOHamiltonian(PairOpTerm(a, m, b, Cs))
 	@test maximum(abs.(todense(MPO(tompotensors(Hs))) - pairterm_dense(a, m, b, Cs, L))) < 1e-12
 
-	# uniform on-site hloc: merges with the diagonal couplings in every D corner
+	# uniform on-site hloc: every D corner carries it, on top of the pairs
 	hloc = randn(ComplexF64, d, d)
 	Hloc = MPOHamiltonian(tm, hloc)
 	Href = pairterm_dense(a, m, b, C, L)
@@ -180,8 +175,8 @@ end
 	end
 	@test maximum(abs.(todense(MPO(tompotensors(Hloc))) - Href)) < 1e-12
 
-	# per-site on-site operators (hlocs may differ per site): equals the pair chain
-	# (diagonal couplings merged) plus the on-site chain
+	# per-site on-site operators (hlocs may differ per site): equals the pair chain plus
+	# the on-site chain
 	hlocs = [randn(ComplexF64, d, d) for _ in 1:L]
 	Hlocs = MPOHamiltonian(tm, hlocs)
 	Hons = MPOHamiltonian(L, [OpTerm(1.0, i => hlocs[i]) for i in 1:L]...)
@@ -205,7 +200,7 @@ end
 	@test maximum(abs.(todense(MPO(tompotensors(MPOHamiltonian(ta)))) -
 					   adjoint(pairterm_dense(a, m, b, C, L)))) < 1e-12
 
-	# exponential couplings agree with ExpDecayOpSum (strictly upper: no diagonal)
+	# exponential couplings agree with ExpDecayOpSum
 	αs = [0.4, 0.8]
 	λs = [1.7, -0.6]
 	Cexp = triu([sum(αs[k] * λs[k]^(j - i) for k in eachindex(αs)) for i in 1:L, j in 1:L], 1)
@@ -220,9 +215,8 @@ end
 	Hos = MPOHamiltonian(opsum)
 	@test maximum(abs.(todense(MPO(tompotensors(Hos))) - todense(MPO(tompotensors(Hm))))) < 1e-12
 
-	# validation: C upper triangular (diagonal allowed), square with L ≥ 2, matching
-	# operator sizes
-	@test_throws ArgumentError PairOpTerm(a, b, randn(ComplexF64, L, L))
+	# validation: C strictly upper triangular, square with L ≥ 2, matching operator sizes
+	@test_throws ArgumentError PairOpTerm(a, b, triu(randn(ComplexF64, L, L)))
 	@test_throws ArgumentError PairOpTerm(a, b, randn(ComplexF64, L, L + 1))
 	@test_throws DimensionMismatch PairOpTerm(a, randn(ComplexF64, 3, 3), C)
 	@test_throws DimensionMismatch PairOpTerm(a, b, randn(ComplexF64, 3, 3), C)

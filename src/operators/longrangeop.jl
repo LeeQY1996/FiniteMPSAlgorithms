@@ -17,17 +17,18 @@
 # α·λ^(j-i)·m^(j-i-1) between the two endpoints.
 #
 #   PairOpTerm(a, m, b, C) represents the *pair-coupled* long-range operator
-#       O = Σ_{i<j} C[i,j] · a_i m_(i+1) ⋯ m_(j-1) b_j + Σ_i C[i,i] · hab_i
-#   with an arbitrary upper-triangular coupling matrix `C` — the off-diagonal entries
-#   the pair couplings with no constraint on their distance dependence (power-law,
-#   random, …), the diagonal entries the on-site products `hab` (default `a·b`). The
-#   5-argument form propagates the channel with `m` between the endpoints (e.g. a
-#   Jordan-Wigner string for fermionic `a_i† a_j` couplings); the 4-argument form takes
-#   `m = I`. This is the finite-state-machine MPO class of TEMPO's `_fsm_mpohamiltonian`
-#   (identity propagation) generalized by a uniform channel propagator: one channel per
-#   coupled starting site, opened with `a`, propagated with `m`, closed with `C[i,j]·b`
-#   — bond dimension L + 1. The identity-propagator ExpDecayOpSum is the special case
-#   C[i,j] = Σ_k α_k λ_k^(j-i) (zero diagonal).
+#       O = Σ_{i<j} C[i,j] · a_i m_(i+1) ⋯ m_(j-1) b_j
+#   with an arbitrary strictly-upper-triangular coupling matrix `C` — no constraint on
+#   the distance dependence of the couplings (power-law, random, …), and no operator
+#   content tied to `C` on a single site (on-site terms enter through the external
+#   `hloc` of the site-tensor/chain constructors). The 5-argument form propagates the
+#   channel with `m` between the endpoints (e.g. a Jordan-Wigner string for fermionic
+#   `a_i† a_j` couplings); the 4-argument form takes `m = I`. This is the
+#   finite-state-machine MPO class of TEMPO's `_fsm_mpohamiltonian` (identity
+#   propagation) generalized by a uniform channel propagator: one channel per coupled
+#   starting site, opened with `a`, propagated with `m`, closed with `C[i,j]·b` — bond
+#   dimension L + 1. The identity-propagator ExpDecayOpSum is the special case
+#   C[i,j] = Σ_k α_k λ_k^(j-i).
 
 """
 	ExpDecayOpTerm(a, m, b, α, λ)
@@ -178,66 +179,61 @@ end
 OpSum(t::ExpDecayOpTerm, L::Int) = OpSum(ExpDecayOpSum(t), L)
 
 """
-	PairOpTerm(a, m, b, C, [hab])
-	PairOpTerm(a, b, C, [hab])
+	PairOpTerm(a, m, b, C)
+	PairOpTerm(a, b, C)
 
 A pair-coupled long-range operator term with an **arbitrary** coupling matrix (see the
-module docstring): `O = Σ_{i<j} C[i,j] · a_i m_(i+1) ⋯ m_(j-1) b_j + Σ_i C[i,i] · hab_i`.
-`a`, `m`, `b` are `d×d` matrices and `C` an upper triangular `L×L` coupling matrix —
-the off-diagonal `C[i,j]` (`i < j`) the pair couplings, the diagonal `C[i,i]` the
-on-site operators `hab` (default `a·b`; stored explicitly because its adjoint is
-`b†·a†`, not expressible through adjointed endpoints when `a` and `b` do not commute).
-The 4-argument form takes the propagator `m` to be the identity; with a Jordan-Wigner
-string as `m` the term represents fermionic `a_i† a_j`-type couplings exactly. Converts
-to per-site [`SchurMPOTensor`](@ref)s in the finite-state-machine layout (one channel
-per coupled starting site, bond dimension `L + 1`).
+module docstring): `O = Σ_{i<j} C[i,j] · a_i m_(i+1) ⋯ m_(j-1) b_j`. `a`, `m`, `b` are
+`d×d` matrices and `C` a strictly upper triangular `L×L` coupling matrix — power-law,
+random, any distance dependence. The 4-argument form takes the propagator `m` to be the
+identity; with a Jordan-Wigner string as `m` the term represents fermionic `a_i† a_j`-type
+couplings exactly. On-site terms are not tied to `C`: pass them through the `hloc`
+argument of [`SchurMPOTensor`](@ref) / [`MPOHamiltonian`](@ref) (uniform or per-site).
+Converts to per-site [`SchurMPOTensor`](@ref)s in the finite-state-machine layout (one
+channel per coupled starting site, bond dimension `L + 1`).
 """
 struct PairOpTerm{T<:Number}
 	a::Matrix{T}
 	m::Matrix{T}
 	b::Matrix{T}
-	hab::Matrix{T}
 	C::Matrix{T}
 	function PairOpTerm(a::AbstractMatrix, m::AbstractMatrix, b::AbstractMatrix,
-						C::AbstractMatrix, hab::AbstractMatrix = a * b)
+						C::AbstractMatrix)
 		d = size(a, 1)
 		(size(a, 2) == size(m, 1) == size(m, 2) == size(b, 1) == size(b, 2) == d) ||
 			throw(DimensionMismatch("a, m, b must be square matrices of equal size"))
-		(size(hab, 1) == size(hab, 2) == d) ||
-			throw(DimensionMismatch("hab must be a $(d)×$(d) matrix"))
 		L = size(C, 1)
 		(L == size(C, 2) && L >= 2) ||
 			throw(ArgumentError("C must be a square L×L coupling matrix with L ≥ 2"))
-		istriu(C) || throw(ArgumentError("C must be upper triangular"))
-		T = promote_type(scalartype(a), scalartype(m), scalartype(b), scalartype(hab),
-						 scalartype(C))
+		istriu(C) && all(iszero, diag(C)) ||
+			throw(ArgumentError("C must be strictly upper triangular"))
+		T = promote_type(scalartype(a), scalartype(m), scalartype(b), scalartype(C))
 		return new{T}(convert(Matrix{T}, a), convert(Matrix{T}, m), convert(Matrix{T}, b),
-			convert(Matrix{T}, hab), convert(Matrix{T}, C))
+			convert(Matrix{T}, C))
 	end
 end
 
-# identity-propagator convenience: PairOpTerm(a, b, C, [hab])
-PairOpTerm(a::AbstractMatrix, b::AbstractMatrix, C::AbstractMatrix,
-		   hab::AbstractMatrix = a * b) = PairOpTerm(a, one(a), b, C, hab)
+# identity-propagator convenience: PairOpTerm(a, b, C)
+PairOpTerm(a::AbstractMatrix, b::AbstractMatrix, C::AbstractMatrix) =
+	PairOpTerm(a, one(a), b, C)
 
 Base.length(t::PairOpTerm) = size(t.C, 1)
 scalartype(::Type{<:PairOpTerm{T}}) where {T} = T
 phydim(t::PairOpTerm) = size(t.a, 1)
 
-# the hermitian conjugate: adjointed operators (in place), conjugated couplings and the
-# adjointed on-site product
+# the hermitian conjugate: adjointed operators (in place) and conjugated couplings
 Base.adjoint(t::PairOpTerm) =
-	PairOpTerm(adjoint(t.a), adjoint(t.m), adjoint(t.b), conj(t.C), adjoint(t.hab))
+	PairOpTerm(adjoint(t.a), adjoint(t.m), adjoint(t.b), conj(t.C))
 
 # the W-form site tensor of a PairOpTerm at site `s` (site-dependent): the
 # finite-state-machine layout of TEMPO's `_fsm_mpohamiltonian` generalized by a uniform
 # channel propagator `m`. Channel k = the starting site k: opened with `a` (the C block,
 # only if channel k couples to some later site), propagated with `m` while
 # k < s < lastclose[k] (the A blocks), closed with `C[k,s]·b` (the B block). The coupling
-# sits entirely at the closing site, so `C` is completely arbitrary; the D corner merges
-# the on-site diagonal coupling `C[s,s]·hab` with the external on-site operator `hloc`
-# (every site). Boundary sites keep only the vacuum row and the closing column through
-# the row/column selection of `tompotensors`.
+# sits entirely at the closing site, so `C` is completely arbitrary; the optional
+# on-site operator `hloc` accumulates in the D corner (every site). Boundary sites keep
+# only the vacuum row and the closing column through the row/column selection of
+# `tompotensors`.
 function SchurMPOTensor(t::PairOpTerm{T}, s::Int,
 						hloc::AbstractMatrix = zeros(T, phydim(t), phydim(t))) where {T}
 	d = phydim(t)
@@ -260,7 +256,7 @@ function SchurMPOTensor(t::PairOpTerm{T}, s::Int,
 		k < s < lastclose[k] && (logical[k+1, k+1] = t.m)       # A: propagate alive channel
 		k < s && !iszero(t.C[k, s]) && (logical[k+1, L+1] = t.C[k, s] * t.b)  # B: close
 	end
-	logical[1, L+1] = t.C[s, s] * t.hab + hloc   # D: diagonal coupling + on-site term
+	logical[1, L+1] = hloc                            # D: on-site term
 	# the explicit physical dimension keeps all-scalar tensors (vanishing C and hloc) valid
 	return SchurMPOTensor{T}(logical, d)
 end
@@ -272,8 +268,7 @@ end
 The pair-coupled operator as an `L`-site Hamiltonian chain (`L = length(t)`), assembled
 from the per-site [`SchurMPOTensor`](@ref)s. The optional on-site operator `hloc` (the
 same on every site) — or the per-site operators `hlocs` (each `hlocs[s]` at site `s`,
-operator content may differ) — merges into the `D` corners with the diagonal couplings
-`C[s,s]·hab`.
+operator content may differ) — accumulates in the `D` corners.
 """
 MPOHamiltonian(t::PairOpTerm{T}, hloc::AbstractMatrix = zeros(T, phydim(t), phydim(t))) where {T} =
 	MPOHamiltonian([SchurMPOTensor(t, s, hloc) for s in 1:length(t)])
@@ -284,7 +279,7 @@ function MPOHamiltonian(t::PairOpTerm, hlocs::AbstractVector{<:AbstractMatrix})
 end
 
 # debug constructor: expand the exact finite-state-machine representation into the
-# (typically much larger) explicit OpSum of all terms
+# (typically much larger) explicit OpSum of all two-site terms
 function OpSum(t::PairOpTerm)
 	L, d = length(t), phydim(t)
 	terms = OpTerm[]
@@ -293,10 +288,6 @@ function OpSum(t::PairOpTerm)
 		positions = collect(i:j)
 		operators = [ifelse(tt == i, t.a, ifelse(tt == j, t.b, t.m)) for tt in positions]
 		push!(terms, OpTerm(t.C[i, j], positions, operators))
-	end
-	for i in 1:L
-		iszero(t.C[i, i]) && continue
-		push!(terms, OpTerm(t.C[i, i], i => t.hab))
 	end
 	return OpSum(fill(d, L), terms)
 end
