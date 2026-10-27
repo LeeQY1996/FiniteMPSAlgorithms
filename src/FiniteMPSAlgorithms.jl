@@ -28,7 +28,7 @@ export AbstractMPS, AbstractMPO, MPSTensor, MPOTensor, CanonicalMPS, CanonicalMP
 	SchurMPOTensor, SparseMPOHamiltonian,
 	OpTerm, OpSum, Coeff, isconstant, term, tompotensor, tompotensors,
 	todense, vectorize, devectorize, superoperator,
-	ExpDecayOpTerm, ExpDecayOpSum,
+	ExpDecayOpTerm, ExpDecayOpSum, PairOpTerm,
 	isleftcanonical, isrightcanonical, iscanonical, canonicalize!, canonicalize,
 	space_l, space_r, phydim, ophydim, iphydim, phydims,
 	ophydims, iphydims, bonddim, bonddims,

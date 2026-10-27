@@ -1,5 +1,40 @@
 # Interface changes
 
+## New: `PairOpTerm` — pair-coupled long-range terms with an arbitrary coupling matrix
+
+`PairOpTerm(a, m, b, C)` (exported; identity-propagator form `PairOpTerm(a, b, C)`)
+represents the operator
+
+```
+O = Σ_{i<j} C[i,j] · a_i m_(i+1) ⋯ m_(j-1) b_j  +  Σ_i C[i,i] · (a·b)_i
+```
+
+on an `L`-site chain (`L = size(C, 1)`): `a` opens at the earlier site, `b` closes at
+the later one, `m` propagates the channel in between (a Jordan-Wigner string for
+fermionic `a_i† a_j`-type couplings), and the coupling matrix `C` is completely
+arbitrary — upper triangular, the off-diagonal entries the pair couplings with no
+constraint on their distance dependence (power-law, random, …), the diagonal entries
+on-site `a·b` products. The Schur (W-form) site tensors follow the finite-state-machine
+layout of TEMPO's `_fsm_mpohamiltonian` (one channel per coupled starting site, bond
+dimension `L + 1`), with the channel propagator `m` generalizing its identity
+propagation.
+
+- `SchurMPOTensor(t, s, [hloc])`: the site-`s` tensor (site-dependent — channels open,
+  propagate and close at their positions); the `D` corner merges the on-site diagonal
+  coupling `C[s,s]·(a·b)` with `hloc`;
+- `MPOHamiltonian(t)` / `MPOHamiltonian(t, hloc)` / `MPOHamiltonian(t, hlocs)`: the
+  chain assembly with a uniform — or a per-site, operator-inhomogeneous — on-site
+  operator merged into the `D` corners;
+- `OpSum(t)`: the debug expansion into explicit product terms;
+- `adjoint`: adjointed operators in place, conjugated couplings.
+
+`ExpDecayOpSum(a, m, b, αs, λs)` is the special case `C[i,j] = Σ_k α_k λ_k^(j-i)`
+(zero diagonal) at bond dimension n + 2; `PairOpTerm` covers arbitrary `C` at bond
+dimension L + 1. The tests pin both representations against independent `kron` dense
+references (including dead/sparse channels), their equality for exponential couplings,
+the `hloc`/`hlocs` merging with the diagonal couplings, the adjoint and the `OpSum`
+expansion.
+
 ## Renamed: `GateOp` → `Gate`; new matrix constructor
 
 - The gate type `GateOp` is now `Gate` (exported); `AbstractGate` is unchanged.
