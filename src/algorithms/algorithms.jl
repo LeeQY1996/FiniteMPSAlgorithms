@@ -20,7 +20,6 @@ include("timeevo/taylorcluster.jl")
 include("timeevo/tdvp.jl")
 include("timeevo/hadamardtdvp.jl")
 include("timeevo/tebd.jl")
-include("expec.jl")
 # sampling: direct configuration sampling from a canonical MPS
 include("sampling.jl")
 # experimental: positive DMRG (thermal states) and Clifford-augmented DMRG

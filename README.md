@@ -1,7 +1,9 @@
 # FiniteMPSAlgorithms
 
 A Julia package of finite matrix-product-state (MPS) and matrix-product-operator (MPO)
-algorithms operating on **dense tensors**. Chains are plain dense site-tensor lists; all
+algorithms operating on **dense tensors**. The shared MPS/MPO foundation is provided by
+`MOSSQuantumMPS.MPSCore`; this package provides the higher-level algorithms.
+Chains are plain dense site-tensor lists; all
 heavy contractions are written with `@tensor` and the linear algebra is delegated to
 BLAS/LAPACK-backed matrix factorizations.
 
@@ -26,9 +28,9 @@ BLAS/LAPACK-backed matrix factorizations.
   orthogonality projectors).
 - **Real and imaginary time evolution**:
   - `TDVP1` — single-site time-dependent variational principle,
-  - `timeevolve!` with `WI` / `WII` / `ComplexStepper` — W-matrix (Schur-form)
+  - `timeevo!` with `WI` / `WII` / `ComplexStepper` — W-matrix (Schur-form)
     evolution of long-range MPO Hamiltonians,
-  - TEBD-style gates: `UnitaryGate`, `GeneralGate`, `apply!`, `swap!`.
+  - TEBD-style gates: `Gate`, `apply!`, `swap!`.
 - **Open quantum systems**: density matrices are `CanonicalMPO`s; the `mult`/`add`
   interface composes arbitrary Lindblad generators (see the example below).
 - **Seq2seq fitting**: `seq2seq(xs, ys, alg; α, D)` fits an MPO map to a dataset of
@@ -36,12 +38,23 @@ BLAS/LAPACK-backed matrix factorizations.
 
 ## Installation
 
+The split packages are local development checkouts. Develop them in the same Julia
+environment (adjust the paths):
+
 ```julia
-julia> ] add https://github.com/guochu/FiniteMPSAlgorithms.git
+using Pkg
+Pkg.activate("/path/to/my-mps-environment")
+Pkg.develop([
+    PackageSpec(path="/path/to/MOSSQuantum"),
+    PackageSpec(path="/path/to/MOSSQuantumMPS"),
+    PackageSpec(path="/path/to/FiniteMPSAlgorithms"),
+])
+Pkg.instantiate()
 ```
 
-Requires Julia ≥ 1.10. Dependencies: `TensorOperations`, `MatrixAlgebraKit`,
-`KrylovKit`.
+The original upstream address does not contain this split. Requires Julia ≥ 1.10.
+MOSSQuantumMPS supplies the shared core; the numerical algorithms additionally
+use `TensorOperations`, `MatrixAlgebraKit`, and `KrylovKit`.
 
 ## Quick start
 
@@ -58,7 +71,7 @@ terms = vcat([OpTerm(-1.0, i => SX) for i in 1:L],
              [OpTerm(-0.5, i => SZ, i + 1 => SZ) for i in 1:L-1])
 H = MPOHamiltonian(L, terms)
 
-E, ψ = ground_state(H, DMRG1(maxiter = 50, tol = 1e-10); D = 32)
+E, ψ, info = ground_state(H, DMRG1(maxiter = 50, tol = 1e-10, D = 32))
 ```
 
 ### Operator application and other chain arithmetic
@@ -80,7 +93,7 @@ c = compress(χ, DMRG1(maxiter = 20, tol = 1e-10, D = 8))
 ψ = prodmps(ComplexF64, fill(2, L), 1)               # product state
 dt, nsteps = -0.1im, 20                              # real time: stepsize is complex
 for _ in 1:nsteps
-    timeevolve!(ψ, H, dt, WII(); trunc = truncdimcutoff(64, 1e-12))
+    timeevo!(ψ, H, dt, WII(); trunc = truncdimcutoff(64, 1e-12))
 end
 ```
 
@@ -163,3 +176,11 @@ cite the paper behind [MPSLearning.jl](https://github.com/guochu/MPSLearning):
   archivePrefix = {arXiv},
 }
 ```
+
+## Source and license status
+
+This development split derives from the upstream FiniteMPSAlgorithms commit
+`ab117c6e09182699f450eb250224bebe0e928c9b`. No license file or explicit
+license declaration was found there at that commit. Confirm authorization with
+the relevant copyright holders before redistribution; the GPL license in
+MOSSQuantumMPS does not supply authorization for the original upstream code.

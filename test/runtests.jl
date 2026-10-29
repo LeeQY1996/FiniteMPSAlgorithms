@@ -13,16 +13,10 @@ using FiniteMPSAlgorithms: SVD, QR, QRpos, LQ, LQpos, SDD, Polar, max_bonddims, 
 include("helpers.jl")
 
 @testset verbose = true "FiniteMPSAlgorithms" begin
-	@testset "tensorops" begin
-		include("tensorops/linalg.jl")
-		include("tensorops/truncation.jl")
-	end
-	@testset "states" begin
-		include("states/structures.jl")
-		include("states/observables.jl")
-	end
-	@testset "operators" begin
-		include("operators/mpo.jl")
+	include("shared_core.jl")
+	# The core tensor/state/MPO suites live with MOSSQuantumMPS. These
+	# cases exercise algorithms against MPOs and the model builders.
+	@testset "operator and model integration" begin
 		include("operators/longrangeop.jl")
 		include("operators/sparsempo.jl")
 		include("operators/vectorize.jl")

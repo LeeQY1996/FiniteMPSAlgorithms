@@ -107,7 +107,7 @@ excited_state!
 ```@docs
 TDVP1
 timeevompo
-timeevolve!
+timeevo!
 WI
 WII
 ComplexStepper
@@ -120,7 +120,6 @@ complex_stepper
 Gate
 swap!
 positions
-operator
 shift
 fuse_gates
 trotter_propagator
@@ -130,7 +129,6 @@ trotter_propagator
 
 ```@docs
 seq2seq
-init_seq2seqcache
 Seq2SeqCache
 ```
 

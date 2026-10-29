@@ -10,6 +10,15 @@ using MatrixAlgebraKit: MatrixAlgebraKit, left_orth!, right_orth!, svd_compact!,
 	LeftOrthAlgorithm, RightOrthAlgorithm, diagview, isunitary
 using KrylovKit: KrylovKit, eigsolve, exponentiate
 
+# Foundational tensor-network types and operations live in MOSSQuantumMPS.
+# Algorithms extend these shared functions rather than defining duplicate types.
+using MOSSQuantumMPS.MPSCore
+import MOSSQuantumMPS.MPSCore: QR, LQ, SVD, expectation, expectationvalue, apply!,
+    _canonicalize!, _changebond!, _check_constant, _dense, _dot, _leftrow,
+    _renormalize!, _rightcol, _updateleft, _updateright, _updatetraceleft,
+    max_bonddims, l_LL, r_RR, TraceCache, bonddims, space_l, space_r, phydim,
+    _updatetraceright, permutation2swaps
+
 # verbosity level for iterative MPS algorithms
 # verbosity = 0: absolutely no message
 # verbosity >= 1: only non-convergence warnings
@@ -64,11 +73,7 @@ export mult, add, compress, compress!,
 # gates
 export AbstractGate, Gate, apply!, swap!, positions, shift, fuse_gates, trotter_propagator
 
-include("tensorops/tensorops.jl")
 include("defaults.jl")
-include("abstractdefs.jl")
-include("states/states.jl")
-include("operators/operators.jl")
 include("models.jl")
 include("algorithms/algorithms.jl")
 

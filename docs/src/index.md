@@ -1,7 +1,8 @@
 # FiniteMPSAlgorithms
 
 A Julia package of finite matrix-product-state (MPS) and matrix-product-operator (MPO)
-algorithms on dense tensors.
+algorithms on dense tensors. Shared MPS/MPO structures and numerical primitives
+are supplied by `MOSSQuantumMPS.MPSCore`; this package owns higher-level algorithms.
 
 ## Overview
 
@@ -15,8 +16,8 @@ algorithms on dense tensors.
   in-place `!` variants.
 - **Ground / excited states**: [`ground_state`](@ref), [`excited_state`](@ref).
 - **Time evolution**: `TDVP1` (single-site TDVP), W-matrix evolution
-  ([`timeevolve!`](@ref) with `WI` / `WII` / `ComplexStepper`), TEBD gates
-  (`UnitaryGate`, `GeneralGate`, [`apply!`](@ref), `swap!`).
+  ([`timeevo!`](@ref) with `WI` / `WII` / `ComplexStepper`), TEBD gates
+  (`Gate`, [`apply!`](@ref), `swap!`).
 - **Open quantum systems**: density matrices as `CanonicalMPO`s; Lindblad generators
   assembled from `mult` / `add`.
 - **Seq2seq**: [`seq2seq`](@ref) fits an MPO map to a dataset of MPS pairs.
